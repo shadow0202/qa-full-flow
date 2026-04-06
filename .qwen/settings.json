@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir *)",
+      "Bash(uv *)",
+      "Bash(python *)",
+      "WebFetch(github.com)",
+      "WebFetch(raw.githubusercontent.com)",
+      "Bash(git clone *)",
+      "Bash(cmd *)",
+      "Bash(dir *)",
+      "Bash(copy *)",
+      "Bash(echo.)",
+      "Bash(del *)",
+      "Bash(git reset *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git restore *)",
+      "Bash(findstr *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(npx *)",
+      "Bash(npm init *)",
+      "Bash(rmdir *)",
+      "Bash(npm install)",
+      "Bash(npm run *)",
+      "Bash(start *)",
+      "Bash(taskkill *)",
+      "Bash(netstat *)",
+      "Bash(timeout *)",
+      "Bash(curl *)"
+    ]
+  },
+  "$version": 3
+}
