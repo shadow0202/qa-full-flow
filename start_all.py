@@ -15,9 +15,9 @@ def start_api_server():
     print("\n" + "="*60)
     print("🌐 正在启动API服务...")
     print("="*60)
-    
+
     uvicorn.run(
-        "src.api.app:create_app",
+        "src.qa_full_flow.api.app:create_app",
         factory=True,
         host="0.0.0.0",
         port=8000,

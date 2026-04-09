@@ -1,7 +1,7 @@
 """Embedding服务 - 负责文本向量化"""
 from typing import List
 from sentence_transformers import SentenceTransformer
-from src.config import settings
+from src.qa_full_flow.core.config import settings
 
 
 class Embedder:

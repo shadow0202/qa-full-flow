@@ -88,7 +88,7 @@ def test_collection(chroma_client):
 @pytest.fixture
 def app():
     """FastAPI应用实例"""
-    from src.api.app import create_app
+    from src.qa_full_flow.api.app import create_app
     return create_app()
 
 

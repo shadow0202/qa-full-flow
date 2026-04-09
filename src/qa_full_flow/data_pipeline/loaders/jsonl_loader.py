@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from typing import List, Dict
-from src.data_pipeline.loaders.base import BaseLoader
+from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
 
 
 class JSONLLoader(BaseLoader):

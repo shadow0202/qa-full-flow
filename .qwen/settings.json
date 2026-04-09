@@ -29,7 +29,12 @@
       "Bash(taskkill *)",
       "Bash(netstat *)",
       "Bash(timeout *)",
-      "Bash(curl *)"
+      "Bash(curl *)",
+      "Bash(ruff *)",
+      "Bash(true)",
+      "Bash(git checkout *)",
+      "Bash(powershell *)",
+      "Bash(wc *)"
     ]
   },
   "$version": 3

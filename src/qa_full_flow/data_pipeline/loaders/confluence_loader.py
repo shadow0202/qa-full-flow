@@ -2,7 +2,7 @@
 import requests
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
-from src.data_pipeline.loaders.base import BaseLoader
+from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
 
 
 class ConfluenceLoader(BaseLoader):

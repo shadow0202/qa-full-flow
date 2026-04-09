@@ -1,7 +1,7 @@
 """Cross-Encoder 重排序器 - 精确相关性打分"""
 from typing import List, Dict, Optional
 from sentence_transformers import CrossEncoder
-from src.config import settings
+from src.qa_full_flow.core.config import settings
 
 
 class Reranker:

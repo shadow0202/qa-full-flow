@@ -1,10 +1,10 @@
 """数据管道 - 编排数据加载、向量化和入库"""
 from datetime import datetime
 from typing import List, Dict, Optional
-from src.data_pipeline.loaders.base import BaseLoader
-from src.data_pipeline.chunker import RecursiveCharacterSplitter
-from src.embedding.embedder import Embedder
-from src.vector_store.chroma_store import ChromaStore
+from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
+from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
+from src.qa_full_flow.embedding.embedder import Embedder
+from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 
 
 class DataPipeline:
@@ -118,12 +118,27 @@ class DataPipeline:
         )
 
         print(f"✅ 入库完成: {len(new_docs)} 条新文档")
+        
+        # 7. 更新 BM25 索引（如果检索器可用）
+        self._update_bm25_index(new_docs)
+
         return {
             "loaded": len(documents),
             "ingested": len(new_docs),
             "skipped": skipped_count,
             "updated": len(new_docs)  # 简化统计，实际应该区分新增和更新
         }
+
+    def _update_bm25_index(self, new_docs: List[Dict]) -> None:
+        """
+        更新 BM25 索引
+
+        Args:
+            new_docs: 新增/更新的文档列表
+        """
+        # 注意：此方法需要在外部检索器中调用，这里仅打印提示
+        if new_docs:
+            print(f"ℹ️  如需启用 BM25 混合检索，请调用 retriever.hybrid_retriever.build_bm25_index() 重建索引")
     
     def _get_existing_ids(self) -> set:
         """获取已存在的文档ID"""

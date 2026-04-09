@@ -1,81 +1,44 @@
-"""测试用例API路由"""
-from fastapi import APIRouter, HTTPException
+"""测试用例API路由（旧接口）"""
+import logging
+from typing import Annotated
+from fastapi import APIRouter, HTTPException, Depends
 
-from src.config import settings
-from src.api.schemas import (
+from src.qa_full_flow.core.config import settings
+from src.qa_full_flow.api.schemas import (
     TestCaseGenerateRequest, TestCaseGenerateResponse,
     TestCaseSaveRequest, TestCaseSaveResponse,
-    TestCaseSessionCreateRequest, TestCaseSessionCreateResponse,
-    TestCasePhase1Request, TestCasePhase1Response,
-    TestCaseConfirmRequest, TestCaseConfirmResponse,
-    TestCasePhase2Request, TestCasePhase2Response,
-    TestCasePhase3Request, TestCasePhase3Response,
-    TestCasePhase4Request, TestCasePhase4Response,
-    TestCaseSessionInfoResponse,
     SearchResult
 )
+from src.qa_full_flow.api.dependencies import (
+    get_test_agent,
+    get_confluence_loader,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
 
 
-def _get_test_agent():
-    """获取测试Agent实例"""
-    try:
-        from src.agent.test_agent import TestAgent
-        from src.agent.llm_service import LLMService
-        from src.retrieval.retriever import Retriever
-        from src.embedding.embedder import Embedder
-        from src.vector_store.chroma_store import ChromaStore
-
-        embedder = Embedder()
-        vector_store = ChromaStore()
-        retriever = Retriever(embedder, vector_store)
-        llm = LLMService()
-        return TestAgent(retriever, llm, embedder, vector_store)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Agent初始化失败: {str(e)}")
-
-
-def _get_confluence_loader():
-    """获取Confluence连接器"""
-    try:
-        from src.data_pipeline.loaders.confluence_loader import ConfluenceLoader
-        from src.config import settings
-
-        if settings.confluence_url and settings.confluence_email and settings.confluence_api_token:
-            return ConfluenceLoader(
-                url=settings.confluence_url,
-                email=settings.confluence_email,
-                api_token=settings.confluence_api_token,
-                verify_ssl=True
-            )
-        return None
-    except Exception:
-        return None
-
-
-# ============ 旧接口兼容 ============
-
 @router.post("/testcase/generate", response_model=TestCaseGenerateResponse)
-async def generate_testcase(request: TestCaseGenerateRequest):
+async def generate_testcase(
+    request: TestCaseGenerateRequest,
+    test_agent = Depends(get_test_agent),
+    confl_loader = Depends(get_confluence_loader)
+):
     """AI生成测试用例（支持PRD、技术文档、补充文档链接）"""
     try:
-        test_agent = _get_test_agent()
-
         # 1. 从Confluence链接获取文档内容
         prd_docs = []
         tech_docs = []
         other_docs = []
 
-        confl_loader = _get_confluence_loader()
         if confl_loader:
-            print("✅ Confluence连接器已初始化")
+            logger.info("✅ Confluence连接器已初始化")
         else:
-            print("⚠️  Confluence未配置，跳过文档获取")
+            logger.warning("⚠️  Confluence未配置，跳过文档获取")
 
         # 获取PRD文档（必填）
         if confl_loader and request.prd_url:
-            print(f"\n📥 正在获取PRD文档...")
+            logger.info(f"📥 正在获取PRD文档...")
             prd_doc = confl_loader.load_from_url(request.prd_url)
             if prd_doc:
                 prd_docs.append(prd_doc)
@@ -87,12 +50,12 @@ async def generate_testcase(request: TestCaseGenerateRequest):
 
         # 获取技术文档（非必填）
         if confl_loader and request.tech_doc_urls:
-            print(f"\n📥 正在获取技术文档...")
+            logger.info(f"📥 正在获取技术文档...")
             tech_docs = confl_loader.load_from_urls(request.tech_doc_urls)
 
         # 获取补充文档（非必填）
         if confl_loader and request.other_doc_urls:
-            print(f"\n📥 正在获取补充文档...")
+            logger.info(f"📥 正在获取补充文档...")
             other_docs = confl_loader.load_from_urls(request.other_doc_urls)
 
         # 2. 构建需求描述（从PRD文档中提取）
@@ -137,15 +100,17 @@ async def generate_testcase(request: TestCaseGenerateRequest):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"❌ 生成测试用例失败: {e}")
         raise HTTPException(status_code=500, detail=f"生成失败: {str(e)}")
 
 
 @router.post("/testcase/save", response_model=TestCaseSaveResponse)
-async def save_testcase(request: TestCaseSaveRequest):
+async def save_testcase(
+    request: TestCaseSaveRequest,
+    test_agent = Depends(get_test_agent)
+):
     """手动保存测试用例到知识库"""
     try:
-        test_agent = _get_test_agent()
-
         saved_count = test_agent._save_test_cases_to_kb(
             test_cases=request.test_cases,
             requirement=request.requirement,
@@ -158,6 +123,7 @@ async def save_testcase(request: TestCaseSaveRequest):
             saved_count=saved_count
         )
     except Exception as e:
+        logger.error(f"❌ 保存测试用例失败: {e}")
         raise HTTPException(status_code=500, detail=f"保存失败: {str(e)}")
 
 
@@ -167,7 +133,7 @@ async def save_testcase(request: TestCaseSaveRequest):
 async def create_testcase_session(request: TestCaseSessionCreateRequest):
     """创建测试用例会话"""
     try:
-        from src.agent.test_session import session_manager
+        from src.qa_full_flow.agent.test_session import session_manager
 
         config = {
             "prd_url": request.prd_url,
@@ -194,13 +160,13 @@ async def create_testcase_session(request: TestCaseSessionCreateRequest):
 async def execute_phase1(session_id: str):
     """执行阶段1：需求分析与测试点提取"""
     try:
-        from src.agent.test_session import session_manager
-        from src.data_pipeline.loaders.confluence_loader import ConfluenceLoader
-        from src.agent.test_phase1_analyzer import Phase1Analyzer
-        from src.agent.llm_service import LLMService
-        from src.retrieval.retriever import Retriever
-        from src.embedding.embedder import Embedder
-        from src.vector_store.chroma_store import ChromaStore
+        from src.qa_full_flow.agent.test_session import session_manager
+        from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
+        from src.qa_full_flow.agent.test_phase1_analyzer import Phase1Analyzer
+        from src.qa_full_flow.agent.llm_service import LLMService
+        from src.qa_full_flow.retrieval.retriever import Retriever
+        from src.qa_full_flow.embedding.embedder import Embedder
+        from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 
         # 获取会话
         session = session_manager.get_session(session_id)
@@ -275,7 +241,7 @@ async def execute_phase1(session_id: str):
 async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
     """确认阶段结果"""
     try:
-        from src.agent.test_session import session_manager, SessionStatus
+        from src.qa_full_flow.agent.test_session import session_manager, SessionStatus
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -319,9 +285,9 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
 async def execute_phase2(session_id: str):
     """执行阶段2：测试用例设计"""
     try:
-        from src.agent.test_session import session_manager
-        from src.agent.test_phase2_generator import Phase2Generator
-        from src.agent.llm_service import LLMService
+        from src.qa_full_flow.agent.test_session import session_manager
+        from src.qa_full_flow.agent.test_phase2_generator import Phase2Generator
+        from src.qa_full_flow.agent.llm_service import LLMService
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -377,8 +343,8 @@ async def execute_phase2(session_id: str):
 async def execute_phase3(session_id: str):
     """执行阶段3：测试用例自审"""
     try:
-        from src.agent.test_session import session_manager
-        from src.agent.test_phase3_reviewer import Phase3Reviewer
+        from src.qa_full_flow.agent.test_session import session_manager
+        from src.qa_full_flow.agent.test_phase3_reviewer import Phase3Reviewer
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -429,8 +395,8 @@ async def execute_phase3(session_id: str):
 async def execute_phase4(session_id: str):
     """执行阶段4：交付"""
     try:
-        from src.agent.test_session import session_manager
-        from src.agent.test_phase4_deliver import Phase4Deliverer
+        from src.qa_full_flow.agent.test_session import session_manager
+        from src.qa_full_flow.agent.test_phase4_deliver import Phase4Deliverer
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -485,7 +451,7 @@ async def execute_phase4(session_id: str):
 async def get_session_info(session_id: str):
     """获取会话信息"""
     try:
-        from src.agent.test_session import session_manager
+        from src.qa_full_flow.agent.test_session import session_manager
 
         session = session_manager.get_session(session_id)
         if not session:

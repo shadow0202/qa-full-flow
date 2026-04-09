@@ -1,40 +1,28 @@
 """知识库API路由"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from typing import Annotated
 
-from src.config import settings
-from src.api.schemas import (
+from src.qa_full_flow.core.config import settings
+from src.qa_full_flow.api.schemas import (
     IngestRequest, IngestResponse,
     SearchRequest, SearchResponse, SearchResult,
     CollectionInfoResponse
 )
-from src.retrieval.retriever import Retriever
-from src.embedding.embedder import Embedder
-from src.vector_store.chroma_store import ChromaStore
-from src.data_pipeline.pipeline import DataPipeline
-from src.data_pipeline.loaders.jsonl_loader import JSONLLoader
+from src.qa_full_flow.api.dependencies import get_retriever, get_pipeline
+from src.qa_full_flow.retrieval.retriever import Retriever
+from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
+from src.qa_full_flow.data_pipeline.loaders.jsonl_loader import JSONLLoader
 
 router = APIRouter(prefix="/api/v1")
 
 
-def _get_retriever() -> Retriever:
-    """获取检索器实例"""
-    embedder = Embedder()
-    vector_store = ChromaStore()
-    return Retriever(embedder, vector_store)
-
-
-def _get_pipeline() -> DataPipeline:
-    """获取数据流水线实例"""
-    embedder = Embedder()
-    vector_store = ChromaStore()
-    return DataPipeline(embedder, vector_store)
-
-
 @router.post("/search", response_model=SearchResponse)
-async def search_knowledge(request: SearchRequest):
+async def search_knowledge(
+    request: SearchRequest,
+    retriever: Annotated[Retriever, Depends(get_retriever)]
+):
     """知识库检索接口"""
     try:
-        retriever = _get_retriever()
         results = retriever.search(
             query=request.query,
             n_results=request.n_results,
@@ -62,11 +50,13 @@ async def search_knowledge(request: SearchRequest):
 
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest_data(request: IngestRequest):
+async def ingest_data(
+    request: IngestRequest,
+    pipeline: Annotated[DataPipeline, Depends(get_pipeline)]
+):
     """数据入库接口"""
     try:
         loader = JSONLLoader()
-        pipeline = _get_pipeline()
         stats = pipeline.ingest(
             loader=loader,
             source=request.source_path,

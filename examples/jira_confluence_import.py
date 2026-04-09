@@ -5,12 +5,13 @@ from pathlib import Path
 # 添加项目根目录
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.config import settings
-from src.embedding.embedder import Embedder
-from src.vector_store.chroma_store import ChromaStore
-from src.retrieval.retriever import Retriever
-from src.data_pipeline.pipeline import DataPipeline
-from src.data_pipeline.loaders import JiraLoader, ConfluenceLoader
+from src.qa_full_flow.core.config import settings
+from src.qa_full_flow.embedding.embedder import Embedder
+from src.qa_full_flow.vector_store.chroma_store import ChromaStore
+from src.qa_full_flow.retrieval.retriever import Retriever
+from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
+from src.qa_full_flow.data_pipeline.loaders.jira_loader import JiraLoader
+from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
 
 
 def example_jira_import():

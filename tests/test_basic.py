@@ -5,21 +5,21 @@ from pathlib import Path
 # 添加项目根目录
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import settings
-from src.embedding.embedder import Embedder
-from src.vector_store.chroma_store import ChromaStore
-from src.retrieval.retriever import Retriever
-from src.data_pipeline.pipeline import DataPipeline
-from src.data_pipeline.loaders.jsonl_loader import JSONLLoader
+from src.qa_full_flow.core.config import settings
+from src.qa_full_flow.embedding.embedder import Embedder
+from src.qa_full_flow.vector_store.chroma_store import ChromaStore
+from src.qa_full_flow.retrieval.retriever import Retriever
+from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
+from src.qa_full_flow.data_pipeline.loaders.jsonl_loader import JSONLLoader
 
 
 def test_config():
     """测试配置加载"""
     print("✅ 测试1: 配置加载")
-    assert settings.ROOT_DIR.exists()
-    assert settings.VECTOR_DB_DIR.exists()
-    print(f"   根目录: {settings.ROOT_DIR}")
-    print(f"   向量库: {settings.VECTOR_DB_DIR}")
+    assert settings.root_dir.exists()
+    assert settings.data_dir.exists()
+    print(f"   根目录: {settings.root_dir}")
+    print(f"   数据目录: {settings.data_dir}")
 
 
 def test_embedder():
@@ -84,8 +84,8 @@ def test_retrieval():
 def test_api_schemas():
     """测试API数据模型"""
     print("\n✅ 测试6: API数据模型")
-    
-    from src.api.schemas import SearchRequest, SearchResponse
+
+    from src.qa_full_flow.api.schemas import SearchRequest, SearchResponse
     
     req = SearchRequest(query="测试", n_results=5)
     assert req.query == "测试"

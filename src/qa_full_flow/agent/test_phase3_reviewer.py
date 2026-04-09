@@ -1,11 +1,21 @@
 """阶段3: 测试用例自审"""
 from typing import Dict, List
 from datetime import datetime
+from src.qa_full_flow.agent.semantic_matcher import (
+    match_function_points,
+    calculate_coverage_rate,
+    get_coverage_details,
+    generate_coverage_summary,
+)
+from src.qa_full_flow.agent.traceability_verifier import (
+    verify_test_case_traceability,
+    generate_traceability_report,
+)
 
 
 class Phase3Reviewer:
     """阶段3：测试用例自审器"""
-    
+
     def __init__(self):
         self.rules = self._load_rules()
     
@@ -14,92 +24,172 @@ class Phase3Reviewer:
         test_cases: List[Dict],
         analysis_result: Dict,
         analysis_doc: str,
-        module: str
+        module: str,
+        source_documents: Dict[str, str] = None
     ) -> Dict:
         """
         执行自审
-        
+
         Args:
             test_cases: 测试用例列表
             analysis_result: 阶段1分析结果
             analysis_doc: 测试点分析文档
             module: 模块名称
-            
+            source_documents: 原文档字典 {"prd": "...", "tech_doc": "..."}
+
         Returns:
             自审结果
         """
         print("\n" + "="*60)
         print("🔍 阶段3：测试用例自审")
         print("="*60)
-        
+
         # 1. 覆盖率分析
         print("\n📊 分析覆盖率...")
         coverage = self._analyze_coverage(test_cases, analysis_result)
-        
-        # 2. 质量检查
+
+        # 2. 可追溯性验证（新增）
+        print("\n🔗 验证可追溯性...")
+        traceability = self._verify_traceability(test_cases, source_documents)
+
+        # 3. 质量检查
         print("\n✅ 执行质量检查...")
         issues = self._check_quality(test_cases)
-        
-        # 3. 生成自审报告
+
+        # 4. 生成自审报告
         print("\n📝 生成自审报告...")
         review_report = self._generate_report(
             module=module,
             test_cases=test_cases,
             coverage=coverage,
-            issues=issues
+            issues=issues,
+            traceability=traceability
         )
         
-        # 4. 统计信息
+        # 5. 统计信息
         coverage_rate = coverage.get("coverage_rate", 0.0)
         issues_found = len(issues)
-        
+        traceability_rate = traceability.get("traceability_rate", 0.0)
+
         print(f"\n✅ 阶段3自审完成")
         print(f"   功能覆盖率: {coverage_rate:.1%}")
+        print(f"   可追溯率: {traceability_rate:.1%}")
         print(f"   发现问题: {issues_found}个")
-        
+
         return {
             "review_report": review_report,
             "coverage": coverage,
             "issues": issues,
+            "traceability": traceability,
             "coverage_rate": coverage_rate,
+            "traceability_rate": traceability_rate,
             "issues_found": issues_found,
             "supplemented_cases": 0,  # 如果有补充用例
             "phase": "phase3"
         }
     
     def _analyze_coverage(self, test_cases: List[Dict], analysis_result: Dict) -> Dict:
-        """分析功能覆盖率"""
-        
-        # 从分析结果中提取功能点
+        """分析功能覆盖率（基于语义匹配）"""
+
+        # 1. 从分析结果中提取功能点
         function_points = []
         if "modules" in analysis_result:
             for mod in analysis_result["modules"]:
                 for func in mod.get("functions", []):
                     for point in func.get("points", []):
-                        function_points.append(point.get("name", ""))
-        
-        total_points = len(function_points)
-        
-        # 简化的覆盖检查（实际应该用语义匹配）
-        covered_points = 0
-        for tc in test_cases:
-            title = tc.get("title", "")
-            for fp in function_points:
-                if fp and fp in title:
-                    covered_points += 1
-                    break
-        
-        coverage_rate = covered_points / total_points if total_points > 0 else 0.0
-        
-        return {
-            "total_function_points": total_points,
-            "covered_points": covered_points,
-            "uncovered_points": total_points - covered_points,
-            "coverage_rate": coverage_rate,
-            "coverage_details": {
-                "covered": [],  # 详细覆盖情况
-                "uncovered": []  # 未覆盖的功能点
+                        point_name = point.get("name", "")
+                        if point_name and point_name.strip():
+                            function_points.append(point_name)
+
+        if not function_points:
+            return {
+                "total_function_points": 0,
+                "covered_points": 0,
+                "uncovered_points": 0,
+                "coverage_rate": 0.0,
+                "coverage_details": {
+                    "covered": [],
+                    "partial": [],
+                    "uncovered": []
+                },
+                "coverage_summary": "无功能点可供分析"
             }
+
+        # 2. 使用语义匹配计算覆盖率
+        match_results = match_function_points(
+            test_cases=test_cases,
+            function_points=function_points,
+            threshold=0.3,  # 相似度阈值
+            use_title=True,
+            use_steps=True
+        )
+
+        # 3. 计算覆盖率
+        coverage_rate = calculate_coverage_rate(match_results, weighted=True)
+        covered_count = sum(1 for r in match_results.values() if r["covered"])
+        uncovered_count = len(match_results) - covered_count
+
+        # 4. 获取覆盖详情
+        coverage_details = get_coverage_details(match_results)
+
+        # 5. 生成摘要
+        coverage_summary = generate_coverage_summary(match_results)
+
+        return {
+            "total_function_points": len(match_results),
+            "covered_points": covered_count,
+            "uncovered_points": uncovered_count,
+            "coverage_rate": coverage_rate,
+            "coverage_details": coverage_details,
+            "coverage_summary": coverage_summary,
+            "match_results": match_results  # 保留原始匹配结果供详细分析
+        }
+
+    def _verify_traceability(
+        self,
+        test_cases: List[Dict],
+        source_documents: Dict[str, str] = None,
+    ) -> Dict:
+        """
+        验证测试用例的可追溯性
+
+        检查每个测试用例的标题、前置条件、预期结果是否能在原文中找到依据。
+
+        Args:
+            test_cases: 测试用例列表
+            source_documents: 原文档字典
+
+        Returns:
+            验证结果
+        """
+        if not source_documents:
+            return {
+                "traceable": True,
+                "traceability_rate": 1.0,
+                "verifications": [],
+                "report": "未提供原文档，跳过验证"
+            }
+
+        # 验证每个用例
+        verifications = []
+        for tc in test_cases:
+            verification = verify_test_case_traceability(tc, source_documents)
+            verifications.append(verification)
+
+        # 计算可追溯率
+        total = len(verifications)
+        traceable = sum(1 for v in verifications if v["traceable"])
+        traceability_rate = traceable / total if total > 0 else 0.0
+
+        # 生成报告
+        report = generate_traceability_report(verifications, source_documents)
+
+        return {
+            "traceable": traceable,
+            "non_traceable": total - traceable,
+            "traceability_rate": traceability_rate,
+            "verifications": verifications,
+            "report": report
         }
     
     def _check_quality(self, test_cases: List[Dict]) -> List[Dict]:
@@ -147,7 +237,8 @@ class Phase3Reviewer:
         module: str,
         test_cases: List[Dict],
         coverage: Dict,
-        issues: List[Dict]
+        issues: List[Dict],
+        traceability: Dict = None
     ) -> str:
         """生成自审报告（模板D）"""
         
@@ -163,14 +254,38 @@ class Phase3Reviewer:
         
         # 2. 覆盖情况
         report += "## 2. 覆盖情况\n\n"
-        report += "**功能覆盖**\n\n"
-        report += "| 模块 | 功能点 | 是否覆盖 | 备注 |\n"
-        report += "|------|--------|----------|------|\n"
-        report += f"| {module} | {coverage['total_function_points']} | "
-        report += f"{'✅' if coverage['coverage_rate'] >= 0.8 else '⚠️'} | "
-        report += f"覆盖率 {coverage['coverage_rate']:.1%} |\n\n"
+        report += "### 2.1 功能覆盖摘要\n\n"
+        report += coverage.get("coverage_summary", "无数据")
+        report += "\n\n"
+
+        report += "**功能点详细**\n\n"
+        report += "| 功能点 | 状态 | 匹配度 | 覆盖用例 | 匹配方式 |\n"
+        report += "|--------|------|--------|----------|----------|\n"
+
+        coverage_details = coverage.get("coverage_details", {})
         
-        report += f"- 功能覆盖率: {coverage['covered_points']}/{coverage['total_function_points']} = {coverage['coverage_rate']:.1%}\n\n"
+        # 已覆盖的功能点
+        for item in coverage_details.get("covered", []):
+            fp = item["function_point"]
+            score = item["score"]
+            tc_list = ", ".join(item["matched_test_cases"][:3])  # 最多显示3个
+            method = item["match_method"]
+            report += f"| {fp} | ✅ 已覆盖 | {score:.2f} | {tc_list} | {method} |\n"
+
+        # 部分覆盖的功能点
+        for item in coverage_details.get("partial", []):
+            fp = item["function_point"]
+            score = item["score"]
+            tc_list = ", ".join(item["matched_test_cases"][:3])
+            method = item["match_method"]
+            report += f"| {fp} | ⚠️ 部分覆盖 | {score:.2f} | {tc_list} | {method} |\n"
+
+        # 未覆盖的功能点
+        for item in coverage_details.get("uncovered", []):
+            fp = item["function_point"]
+            report += f"| {fp} | ❌ 未覆盖 | 0.00 | - | - |\n"
+
+        report += "\n"
         
         # 用例分布
         report += "**用例分布**\n\n"
@@ -239,19 +354,43 @@ class Phase3Reviewer:
         report += "| PRD文档 | ✅ 已使用 | 主要需求来源 |\n"
         report += "| 技术文档 | ✅ 已使用/❌ 未提供 | 补充技术细节 |\n"
         report += "| 知识库历史用例 | ✅ 已使用/❌ 未使用 | 参考类似场景 |\n"
+
+        # 7. 可追溯性验证（新增）
+        if traceability and traceability.get("verifications"):
+            report += "\n## 7. 可追溯性验证\n\n"
+            report += traceability.get("report", "无数据")
+            report += "\n"
+
+        # 8. 自审结论
+        report += "\n## 8. 自审结论\n\n"
         
-        # 7. 自审结论
-        report += "\n## 7. 自审结论\n\n"
-        if len(issues) == 0 and coverage["coverage_rate"] >= 0.8:
+        # 综合评估：覆盖率 + 可追溯率 + 问题数
+        coverage_rate = coverage["coverage_rate"]
+        traceability_rate = traceability.get("traceability_rate", 1.0) if traceability else 1.0
+        issue_count = len(issues)
+
+        if issue_count == 0 and coverage_rate >= 0.8 and traceability_rate >= 0.8:
             report += "**结论**: ✅ 通过\n\n"
+            report += f"**依据**:\n"
+            report += f"- 功能覆盖率: {coverage_rate:.1%} (≥80%)\n"
+            report += f"- 可追溯率: {traceability_rate:.1%} (≥80%)\n"
+            report += f"- 发现问题: {issue_count}个\n\n"
             report += "**建议**: 测试用例质量良好，可以交付使用。\n"
-        elif len(issues) <= 3 and coverage["coverage_rate"] >= 0.7:
+        elif issue_count <= 3 and coverage_rate >= 0.7 and traceability_rate >= 0.6:
             report += "**结论**: ⚠️ 有条件通过\n\n"
+            report += f"**依据**:\n"
+            report += f"- 功能覆盖率: {coverage_rate:.1%} (≥70%)\n"
+            report += f"- 可追溯率: {traceability_rate:.1%} (≥60%)\n"
+            report += f"- 发现问题: {issue_count}个\n\n"
             report += "**建议**: 存在少量问题需要修复，建议完善后交付。\n"
         else:
             report += "**结论**: ❌ 不通过\n\n"
+            report += f"**依据**:\n"
+            report += f"- 功能覆盖率: {coverage_rate:.1%} (要求≥70%)\n"
+            report += f"- 可追溯率: {traceability_rate:.1%} (要求≥60%)\n"
+            report += f"- 发现问题: {issue_count}个\n\n"
             report += "**建议**: 需要大幅改进测试用例质量和覆盖率。\n"
-        
+
         return report
     
     def _load_rules(self) -> Dict:

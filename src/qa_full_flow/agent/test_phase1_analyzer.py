@@ -1,20 +1,19 @@
 """阶段1: 需求分析与测试点提取"""
 import json
 from typing import Dict, List, Optional
-from src.agent.llm_service import LLMService
-from src.retrieval.retriever import Retriever
-from src.agent.prompts.test_analysis import (
-    PHASE1_SYSTEM_PROMPT,
-    PHASE1_USER_PROMPT
-)
+from src.qa_full_flow.agent.llm_service import LLMService
+from src.qa_full_flow.retrieval.retriever import Retriever
+from src.qa_full_flow.agent.prompt_manager import get_prompt_manager
+from src.qa_full_flow.agent.document_structurer import preprocess_documents
 
 
 class Phase1Analyzer:
     """阶段1：需求分析与测试点提取器"""
-    
+
     def __init__(self, llm_service: LLMService, retriever: Retriever = None):
         self.llm = llm_service
         self.retriever = retriever
+        self.prompt_manager = get_prompt_manager()
     
     def analyze(
         self,
@@ -31,7 +30,26 @@ class Phase1Analyzer:
         print("\n" + "="*60)
         print("📋 阶段1：需求分析与测试点提取")
         print("="*60)
-        
+
+        # 0. 文档结构化预处理（新增：控制 token 预算）
+        print("\n📐 文档结构化预处理...")
+        preprocessed = preprocess_documents(
+            prd_content=prd_content,
+            module_name=module,
+            tech_docs=tech_doc_contents or [],
+            other_docs=other_doc_contents or [],
+        )
+
+        # 使用预处理后的内容
+        prd_structured = preprocessed["prd"]
+        tech_processed = [d["content"] for d in preprocessed["tech_docs"]]
+        other_processed = [d["content"] for d in preprocessed["other_docs"]]
+        constraints = preprocessed["constraints"]
+
+        print(f"✅ PRD 结构化完成: {prd_structured['budget_used']} tokens 使用")
+        if preprocessed["any_truncated"]:
+            print(f"⚠️  部分内容已截断以符合 token 预算")
+
         # 1. 可选：检索知识库获取历史相似用例
         knowledge_refs = []
         if use_knowledge_base and self.retriever:
@@ -41,15 +59,16 @@ class Phase1Analyzer:
                 n_results=3
             )
             print(f"✅ 找到 {len(knowledge_refs)} 条参考知识")
-        
+
         # 2. 构建分析Prompt
         print("\n🤖 调用LLM进行需求分析...")
         analysis_result = self._call_llm(
-            prd_content=prd_content,
-            tech_doc_contents=tech_doc_contents or [],
-            other_doc_contents=other_doc_contents or [],
+            prd_structured=prd_structured,
+            tech_doc_contents=tech_processed,
+            other_doc_contents=other_processed,
             knowledge_refs=knowledge_refs,
             module=module,
+            constraints=constraints,
             prd_url=prd_url,
             tech_doc_urls=tech_doc_urls or [],
             other_doc_urls=other_doc_urls or []
@@ -84,39 +103,56 @@ class Phase1Analyzer:
     
     def _call_llm(
         self,
-        prd_content: str,
+        prd_structured: Dict,
         tech_doc_contents: List[str],
         other_doc_contents: List[str],
         knowledge_refs: List[Dict],
         module: str,
+        constraints: Dict,
         prd_url: str,
         tech_doc_urls: List[str],
         other_doc_urls: List[str]
     ) -> Dict:
         """调用LLM进行分析"""
-        
+
+        # 使用结构化 PRD 内容
+        prd_content = prd_structured.get("content", "")
+
         tech_doc_text = ""
         if tech_doc_contents:
             tech_doc_text = "\n\n".join([
                 f"### 技术文档 {i+1}\n{content}"
                 for i, content in enumerate(tech_doc_contents)
             ])
-        
+
         other_doc_text = ""
         if other_doc_contents:
             other_doc_text = "\n\n".join([
                 f"### 补充文档 {i+1}\n{content}"
                 for i, content in enumerate(other_doc_contents)
             ])
-        
+
         knowledge_text = ""
         if knowledge_refs:
             knowledge_text = "\n\n".join([
                 f"### 历史参考 {i+1}\n{ref.get('content', '')}"
                 for i, ref in enumerate(knowledge_refs)
             ])
-        
-        user_prompt = PHASE1_USER_PROMPT.format(
+
+        # 添加显式约束（未提及内容）
+        constraint_text = constraints.get("warning", "")
+        if constraint_text:
+            constraint_text = f"\n\n## ⚠️ 重要约束\n{constraint_text}"
+
+        # 使用 PromptManager 渲染模板（支持从文件加载）
+        system_prompt = self.prompt_manager.render(
+            "phase1_system_prompt",
+            version="v1"
+        )
+
+        user_prompt = self.prompt_manager.render(
+            "phase1_user_prompt",
+            version="v1",
             module=module,
             prd_content=prd_content,
             tech_doc_content=tech_doc_text or "无技术文档",
@@ -125,25 +161,23 @@ class Phase1Analyzer:
             prd_url=prd_url,
             tech_doc_urls=", ".join(tech_doc_urls) if tech_doc_urls else "无",
             other_doc_urls=", ".join(other_doc_urls) if other_doc_urls else "无"
-        )
-        
+        ) + constraint_text
+
         response = self.llm.generate(
-            system_prompt=PHASE1_SYSTEM_PROMPT,
-            user_prompt=user_prompt
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_mode=True  # 启用 JSON mode，强制输出 JSON
+        )
+
+        # 使用容错解析器
+        from src.qa_full_flow.agent.json_parser import extract_json_object
+        
+        result = extract_json_object(
+            response,
+            fallback={"raw_analysis": response}
         )
         
-        try:
-            json_start = response.find("{")
-            json_end = response.rfind("}") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                result = json.loads(json_str)
-                return result
-            else:
-                return {"raw_analysis": response}
-        except Exception as e:
-            print(f"⚠️  LLM输出解析失败: {e}")
-            return {"raw_analysis": response}
+        return result
     
     def _format_analysis_doc(
         self,

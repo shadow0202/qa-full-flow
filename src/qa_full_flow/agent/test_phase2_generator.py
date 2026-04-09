@@ -2,18 +2,17 @@
 import json
 from datetime import datetime
 from typing import Dict, List
-from src.agent.llm_service import LLMService
-from src.agent.prompts.test_design import (
-    TEST_CASE_GENERATION_SYSTEM_PROMPT_V2,
-    TEST_CASE_GENERATION_USER_PROMPT_V2
-)
+from src.qa_full_flow.agent.llm_service import LLMService
+from src.qa_full_flow.agent.json_parser import extract_json_array
+from src.qa_full_flow.agent.prompt_manager import get_prompt_manager
 
 
 class Phase2Generator:
     """阶段2：测试用例设计生成器"""
-    
+
     def __init__(self, llm_service: LLMService):
         self.llm = llm_service
+        self.prompt_manager = get_prompt_manager()
     
     def generate_test_cases(
         self,
@@ -87,44 +86,114 @@ class Phase2Generator:
         tech_doc_content: str,
         other_doc_content: str
     ) -> List[Dict]:
-        """调用LLM生成测试用例"""
-        
-        user_prompt = TEST_CASE_GENERATION_USER_PROMPT_V2.format(
-            requirement=f"模块：{module}\n\n详见测试点分析文档",
+        """调用LLM生成测试用例（基于 Phase1 结构化结果）"""
+
+        # 从 Phase1 提取结构化功能点（避免重新投喂全文）
+        structured_points = self._extract_function_points(analysis_doc)
+
+        # 只传递结构化功能点，而不是原文全文
+        # 使用 PromptManager 渲染模板（支持从文件加载）
+        system_prompt = self.prompt_manager.render(
+            "phase2_system_prompt",
+            version="v3"
+        )
+
+        user_prompt = self.prompt_manager.render(
+            "phase2_user_prompt",
+            version="v3",
             module=module,
-            prd_content=prd_content or analysis_doc[:1000],
-            tech_doc_content=tech_doc_content or "无技术文档",
-            other_doc_content=other_doc_content or "无补充文档",
-            references="请参考测试点分析文档中的功能点",
+            function_points=structured_points,
+            analysis_doc=analysis_doc[:2000],
             n_examples=n_examples
         )
-        
+
         response = self.llm.generate(
-            system_prompt=TEST_CASE_GENERATION_SYSTEM_PROMPT_V2,
-            user_prompt=user_prompt
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            json_mode=True  # 启用 JSON mode，强制输出 JSON
         )
+
+        # 使用容错解析器
+        from src.qa_full_flow.agent.json_parser import extract_json_array
         
-        # 解析JSON
-        try:
-            json_start = response.find("[")
-            json_end = response.rfind("]") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                test_cases = json.loads(json_str)
-                
-                # 补充必要字段
-                for i, tc in enumerate(test_cases, 1):
-                    tc["tc_id"] = f"TC-{i:03d}"
-                    tc["module"] = module
-                    tc["source"] = "ai_phase2_generated"
-                
-                return test_cases
-            else:
-                raise ValueError("未找到JSON格式输出")
-        except Exception as e:
-            print(f"⚠️  LLM输出解析失败: {e}，使用降级方案")
+        test_cases = extract_json_array(
+            response,
+            required_fields=["title", "priority"],
+            fallback=None
+        )
+
+        # 如果解析失败，使用降级方案
+        if test_cases is None:
+            print(f"⚠️  LLM输出解析失败，使用降级方案")
             return self._generate_simple_cases(analysis_doc, module, n_examples)
-    
+
+        # 补充必要字段
+        for i, tc in enumerate(test_cases, 1):
+            tc["tc_id"] = f"TC-{i:03d}"
+            tc["module"] = module
+            tc["source"] = "ai_phase2_generated"
+
+        return test_cases
+
+    def _extract_function_points(self, analysis_doc: str) -> str:
+        """
+        从 Phase1 分析结果中提取结构化功能点
+
+        避免将原文全文投喂给 Phase2，只传递已提取的功能点。
+        """
+        import json
+        
+        # 尝试解析分析文档
+        try:
+            if isinstance(analysis_doc, str):
+                # 如果是 JSON 字符串，解析它
+                if analysis_doc.strip().startswith('{'):
+                    analysis = json.loads(analysis_doc)
+                else:
+                    # 如果不是 JSON，直接返回原文
+                    return analysis_doc[:1500]
+            elif isinstance(analysis_doc, dict):
+                analysis = analysis_doc
+            else:
+                return str(analysis_doc)[:1500]
+
+            # 提取结构化功能点
+            function_points = []
+            
+            if "modules" in analysis:
+                for mod in analysis["modules"]:
+                    mod_name = mod.get("name", "未知模块")
+                    function_points.append(f"\n## 模块: {mod_name}")
+                    
+                    for func in mod.get("functions", []):
+                        func_name = func.get("name", "未知功能")
+                        func_desc = func.get("description", "")
+                        function_points.append(f"\n### 功能: {func_name}")
+                        if func_desc:
+                            function_points.append(f"描述: {func_desc}")
+                        
+                        for point in func.get("points", []):
+                            point_name = point.get("name", "")
+                            details = point.get("details", [])
+                            function_points.append(f"- {point_name}")
+                            
+                            for detail in details[:3]:  # 最多3个详情
+                                item = detail.get("item", "")
+                                desc = detail.get("desc", "")
+                                pending = detail.get("pending", "")
+                                
+                                if pending:
+                                    function_points.append(f"  - {item}: {desc} 【{pending}】")
+                                else:
+                                    function_points.append(f"  - {item}: {desc}")
+
+            return "\n".join(function_points)
+            
+        except Exception as e:
+            # 解析失败，返回原文摘要
+            print(f"⚠️  功能点提取失败，使用原文摘要: {e}")
+            return analysis_doc[:1500] if isinstance(analysis_doc, str) else str(analysis_doc)[:1500]
+
     def _generate_simple_cases(
         self,
         analysis_doc: str,

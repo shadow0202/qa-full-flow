@@ -2,8 +2,8 @@
 import jieba
 from typing import List, Dict, Optional
 from rank_bm25 import BM25Okapi
-from src.vector_store.chroma_store import ChromaStore
-from src.embedding.embedder import Embedder
+from src.qa_full_flow.vector_store.chroma_store import ChromaStore
+from src.qa_full_flow.embedding.embedder import Embedder
 
 
 class HybridRetriever:
