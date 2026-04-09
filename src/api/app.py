@@ -218,11 +218,12 @@ def create_app() -> FastAPI:
                     chunk_overlap=config.get("chunk_overlap", 50)
                 )
 
-                # 临时替换 pipeline 的 chunker
-                original_chunker = pipeline.chunker
-                pipeline.chunker = chunker
-                stats = pipeline.ingest(loader, file_path, update_mode=update_mode)
-                pipeline.chunker = original_chunker
+                stats = pipeline.ingest(
+                    loader,
+                    file_path,
+                    update_mode=update_mode,
+                    chunker=chunker
+                )
 
                 return KnowledgeSyncResponse(
                     success=True,

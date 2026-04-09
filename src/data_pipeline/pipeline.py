@@ -21,7 +21,7 @@ class DataPipeline:
         self.chunker = chunker  # 可选，None 表示不切分
 
     def ingest(self, loader: BaseLoader, source: str, skip_existing: bool = True,
-               update_mode: str = "incremental") -> Dict:
+               update_mode: str = "incremental", chunker: Optional[RecursiveCharacterSplitter] = None) -> Dict:
         """
         执行数据入库
 
@@ -33,11 +33,15 @@ class DataPipeline:
                 - "skip": 跳过已存在的（等同 skip_existing=True）
                 - "incremental": 增量更新，对比 last_updated 时间戳
                 - "force": 强制更新，覆盖所有数据
+            chunker: 文档切分器（可选，传入则使用此实例而非全局默认）
 
         Returns:
             入库统计信息
         """
         print(f"\n🔄 开始数据入库...")
+
+        # 使用传入的 chunker 或默认
+        active_chunker = chunker or self.chunker
 
         # 1. 加载数据
         documents = loader.load(source)
@@ -72,9 +76,9 @@ class DataPipeline:
             }
 
         # 3. 文档切分（如果启用了 chunker）
-        if self.chunker:
+        if active_chunker:
             print(f"✂️  正在切分文档...")
-            new_docs = self.chunker.split_documents(new_docs)
+            new_docs = active_chunker.split_documents(new_docs)
             print(f"📊 切分结果: {len(documents)} 条文档 → {len(new_docs)} 个块")
 
         # 4. 向量化

@@ -41,11 +41,17 @@ class JSONLLoader(BaseLoader):
     
     def _parse_item(self, item: Dict) -> Dict:
         """解析单条JSONL记录"""
+        metadata = item.get("metadata", {}).copy()
+        # 确保 last_updated 存在，否则使用当前时间
+        if "last_updated" not in metadata:
+            from datetime import datetime
+            metadata["last_updated"] = datetime.now().isoformat()
+
         return {
             "doc_id": item.get("doc_id", ""),
             "content": item.get("content", ""),
             "source_type": item.get("source_type", "unknown"),
             "module": item.get("module", "unknown"),
             "tags": item.get("tags", []),
-            "metadata": item.get("metadata", {})
+            "metadata": metadata
         }

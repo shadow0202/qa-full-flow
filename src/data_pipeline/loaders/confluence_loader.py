@@ -167,7 +167,7 @@ class ConfluenceLoader(BaseLoader):
                 version_number = version.get("number", 0)
                 author_id = version.get("authorId", "")
                 created_at = version.get("createdAt", "")
-                updated_at = version.get("createdAt", "")  # v2 API 用 createdAt
+                updated_at = version.get("updatedAt", version.get("createdAt", ""))
             else:
                 # v1 API格式
                 page_id = page.get("id", "")
