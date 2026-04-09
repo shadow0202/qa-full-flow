@@ -1,12 +1,15 @@
 """阶段1: 需求分析与测试点提取"""
-import json
+import logging
 from typing import Dict, List, Optional
 from src.agent.llm_service import LLMService
+from src.agent.json_parser import extract_json_object
 from src.retrieval.retriever import Retriever
 from src.agent.prompts.test_analysis import (
     PHASE1_SYSTEM_PROMPT,
     PHASE1_USER_PROMPT
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Phase1Analyzer:
@@ -131,18 +134,12 @@ class Phase1Analyzer:
             system_prompt=PHASE1_SYSTEM_PROMPT,
             user_prompt=user_prompt
         )
-        
-        try:
-            json_start = response.find("{")
-            json_end = response.rfind("}") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                result = json.loads(json_str)
-                return result
-            else:
-                return {"raw_analysis": response}
-        except Exception as e:
-            print(f"⚠️  LLM输出解析失败: {e}")
+
+        result = extract_json_object(response)
+        if result:
+            return result
+        else:
+            logger.warning("Phase1 JSON 解析失败，返回原始响应")
             return {"raw_analysis": response}
     
     def _format_analysis_doc(

@@ -1,7 +1,11 @@
 """阶段4: 测试用例交付"""
 import json
+import logging
+from pathlib import Path
 from datetime import datetime
 from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class Phase4Deliverer:
@@ -16,91 +20,123 @@ class Phase4Deliverer:
         analysis_doc: str,
         test_cases: List[Dict],
         review_report: str,
-        statistics: Dict
+        statistics: Dict,
+        output_dir: str = None
     ) -> Dict:
         """
-        执行交付
-        
+        执行交付（写入实际文件）
+
         Args:
             module: 模块名称
             analysis_doc: 测试点分析文档
             test_cases: 测试用例列表
             review_report: 自审报告
             statistics: 统计信息
-            
+            output_dir: 输出目录（默认 data/deliverables/）
+
         Returns:
             交付结果
         """
         print("\n" + "="*60)
         print("📦 阶段4：测试用例交付")
         print("="*60)
+
+        # 1. 创建输出目录
+        if output_dir is None:
+            output_dir = str(Path(__file__).parent.parent.parent.parent / "data" / "deliverables")
         
-        # 1. 整理交付物
-        print("\n📁 整理交付物...")
-        deliverables = self._organize_deliverables(
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # 2. 写入实际文件
+        print("\n📁 正在写入交付物...")
+        deliverables = self._write_deliverables(
             module=module,
             analysis_doc=analysis_doc,
             test_cases=test_cases,
-            review_report=review_report
+            review_report=review_report,
+            output_path=output_path
         )
-        
-        # 2. 生成交付清单
+
+        # 3. 生成交付清单
         print("\n📝 生成交付清单...")
         delivery_list = self._generate_delivery_list(
             module=module,
             test_cases=test_cases,
-            statistics=statistics
+            statistics=statistics,
+            output_path=output_path
         )
-        
-        # 3. 统计汇总
+
+        # 4. 统计汇总
         summary = self._calculate_summary(
             module=module,
             test_cases=test_cases,
             statistics=statistics
         )
-        
+
         print(f"\n✅ 阶段4交付完成")
-        print(f"   交付物: {len(deliverables)} 个文件")
+        print(f"   交付物: {len(deliverables)} 个文件已写入 {output_path}")
         print(f"   用例总数: {summary['total_cases']}")
-        
+
         return {
             "deliverables": deliverables,
             "delivery_list": delivery_list,
             "summary": summary,
+            "output_dir": str(output_path),
             "phase": "phase4"
         }
-    
-    def _organize_deliverables(
+
+    def _write_deliverables(
         self,
         module: str,
         analysis_doc: str,
         test_cases: List[Dict],
-        review_report: str
+        review_report: str,
+        output_path: Path
     ) -> Dict:
-        """整理交付物"""
-        
+        """写入实际交付物文件"""
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        return {
-            "analysis_doc": {
-                "filename": f"{module}_测试点分析.md",
-                "content": analysis_doc,
-                "type": "markdown",
-                "description": "需求分析产物"
-            },
-            "test_cases_json": {
-                "filename": f"{module}_测试用例.json",
-                "content": json.dumps(test_cases, ensure_ascii=False, indent=2),
-                "type": "json",
-                "description": "测试用例文件"
-            },
-            "review_report": {
-                "filename": f"{module}_测试用例自审报告.md",
-                "content": review_report,
-                "type": "markdown",
-                "description": "自审结果"
-            }
+        deliverables = {}
+
+        # 1. 测试点分析文档 (Markdown)
+        analysis_file = output_path / f"{module}_测试点分析.md"
+        analysis_file.write_text(analysis_doc, encoding="utf-8")
+        deliverables["analysis_doc"] = {
+            "filename": str(analysis_file),
+            "type": "markdown",
+            "description": "需求分析产物",
+            "size_bytes": analysis_file.stat().st_size
         }
+        print(f"   ✅ 已写入: {analysis_file}")
+
+        # 2. 测试用例 (JSON)
+        test_cases_file = output_path / f"{module}_测试用例.json"
+        test_cases_file.write_text(
+            json.dumps(test_cases, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        deliverables["test_cases_json"] = {
+            "filename": str(test_cases_file),
+            "type": "json",
+            "description": "测试用例文件",
+            "size_bytes": test_cases_file.stat().st_size,
+            "test_cases_count": len(test_cases)
+        }
+        print(f"   ✅ 已写入: {test_cases_file}")
+
+        # 3. 自审报告 (Markdown)
+        review_file = output_path / f"{module}_测试用例自审报告.md"
+        review_file.write_text(review_report, encoding="utf-8")
+        deliverables["review_report"] = {
+            "filename": str(review_file),
+            "type": "markdown",
+            "description": "自审结果",
+            "size_bytes": review_file.stat().st_size
+        }
+        print(f"   ✅ 已写入: {review_file}")
+
+        return deliverables
     
     def _generate_delivery_list(
         self,

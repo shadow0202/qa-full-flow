@@ -86,25 +86,44 @@ class JiraLoader(BaseLoader):
         return self.load(issue_type="Task", status=status, max_results=max_results)
     
     def _fetch_issues(self, jql: str, max_results: int) -> List[Dict]:
-        """执行JQL查询"""
+        """执行JQL查询（支持分页）"""
         url = f"{self.url}/rest/api/3/search"
-        params = {
-            "jql": jql,
-            "maxResults": max_results,
-            "fields": "summary,description,labels,components,priority,status,issuetype,created,updated,assignee"
-        }
-        
-        try:
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            total = data.get("total", 0)
-            print(f"   查询到 {total} 条记录，返回 {len(data.get('issues', []))} 条")
-            
-            return data.get("issues", [])
-        except Exception as e:
-            raise Exception(f"JIRA API调用失败: {str(e)}")
+        all_issues = []
+        start_at = 0
+        page_size = min(max_results, 100)  # JIRA API 单次最大 100
+
+        while start_at < max_results:
+            params = {
+                "jql": jql,
+                "maxResults": page_size,
+                "startAt": start_at,
+                "fields": "summary,description,labels,components,priority,status,issuetype,created,updated,assignee"
+            }
+
+            try:
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+                total = data.get("total", 0)
+                issues = data.get("issues", [])
+                all_issues.extend(issues)
+                
+                print(f"   分页拉取: {start_at}-{start_at+len(issues)} / 总计 {total} 条")
+
+                if len(issues) < page_size:
+                    break  # 没有更多数据了
+                
+                start_at += page_size
+
+                if len(all_issues) >= max_results:
+                    break  # 已达到用户请求的最大值
+
+            except Exception as e:
+                raise Exception(f"JIRA API调用失败: {str(e)}")
+
+        print(f"   查询到 {len(all_issues)} 条记录（分页拉取完成）")
+        return all_issues[:max_results]
     
     def _parse_issue(self, issue: Dict) -> Optional[Dict]:
         """解析JIRA问题为统一格式"""

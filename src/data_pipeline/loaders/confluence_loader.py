@@ -83,28 +83,48 @@ class ConfluenceLoader(BaseLoader):
         return documents
     
     def _fetch_pages(self, space_key: str, max_results: int) -> List[Dict]:
-        """获取页面列表"""
-        url = f"{self.url}/rest/api/content"
-        params = {
-            "type": "page",
-            "expand": "space,version,ancestors",
-            "limit": max_results
-        }
-        
-        if space_key:
-            params["spaceKey"] = space_key
-        
-        try:
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        """获取页面列表（支持分页）"""
+        all_pages = []
+        cursor = None
+        page_size = min(max_results, 50)
+
+        while len(all_pages) < max_results:
+            url = f"{self.url}/rest/api/content"
+            params = {
+                "type": "page",
+                "expand": "space,version,ancestors",
+                "limit": page_size
+            }
+
+            if space_key:
+                params["spaceKey"] = space_key
             
-            results = data.get("results", [])
-            print(f"   查询到 {len(results)} 个页面")
-            
-            return results
-        except Exception as e:
-            raise Exception(f"Confluence API调用失败: {str(e)}")
+            if cursor:
+                params["cursor"] = cursor
+
+            try:
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+                results = data.get("results", [])
+                all_pages.extend(results)
+                
+                print(f"   分页拉取: 已获取 {len(all_pages)} 页")
+
+                # 检查是否有下一页
+                cursor = data.get("_links", {}).get("next")
+                if not cursor:
+                    break
+
+                if len(all_pages) >= max_results:
+                    break
+
+            except Exception as e:
+                raise Exception(f"Confluence API调用失败: {str(e)}")
+
+        print(f"   查询到 {len(all_pages)} 个页面（分页拉取完成）")
+        return all_pages[:max_results]
     
     def _search_pages(self, query: str, max_results: int) -> List[Dict]:
         """搜索页面"""

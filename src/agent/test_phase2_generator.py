@@ -1,12 +1,15 @@
 """阶段2: 测试用例设计生成"""
-import json
+import logging
 from datetime import datetime
 from typing import Dict, List
 from src.agent.llm_service import LLMService
+from src.agent.json_parser import extract_json_array
 from src.agent.prompts.test_design import (
     TEST_CASE_GENERATION_SYSTEM_PROMPT_V2,
     TEST_CASE_GENERATION_USER_PROMPT_V2
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Phase2Generator:
@@ -103,26 +106,18 @@ class Phase2Generator:
             system_prompt=TEST_CASE_GENERATION_SYSTEM_PROMPT_V2,
             user_prompt=user_prompt
         )
-        
-        # 解析JSON
-        try:
-            json_start = response.find("[")
-            json_end = response.rfind("]") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                test_cases = json.loads(json_str)
-                
-                # 补充必要字段
-                for i, tc in enumerate(test_cases, 1):
-                    tc["tc_id"] = f"TC-{i:03d}"
-                    tc["module"] = module
-                    tc["source"] = "ai_phase2_generated"
-                
-                return test_cases
-            else:
-                raise ValueError("未找到JSON格式输出")
-        except Exception as e:
-            print(f"⚠️  LLM输出解析失败: {e}，使用降级方案")
+
+        # 使用容错解析
+        test_cases = extract_json_array(response)
+        if test_cases:
+            # 补充必要字段
+            for i, tc in enumerate(test_cases, 1):
+                tc["tc_id"] = f"TC-{i:03d}"
+                tc["module"] = module
+                tc["source"] = "ai_phase2_generated"
+            return test_cases
+        else:
+            logger.warning("Phase2 JSON 解析失败，使用降级方案")
             return self._generate_simple_cases(analysis_doc, module, n_examples)
     
     def _generate_simple_cases(

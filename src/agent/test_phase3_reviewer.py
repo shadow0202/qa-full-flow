@@ -68,8 +68,8 @@ class Phase3Reviewer:
         }
     
     def _analyze_coverage(self, test_cases: List[Dict], analysis_result: Dict) -> Dict:
-        """分析功能覆盖率"""
-        
+        """分析功能覆盖率（含详细覆盖/未覆盖列表）"""
+
         # 从分析结果中提取功能点
         function_points = []
         if "modules" in analysis_result:
@@ -77,28 +77,55 @@ class Phase3Reviewer:
                 for func in mod.get("functions", []):
                     for point in func.get("points", []):
                         function_points.append(point.get("name", ""))
-        
+
         total_points = len(function_points)
-        
-        # 简化的覆盖检查（实际应该用语义匹配）
-        covered_points = 0
-        for tc in test_cases:
-            title = tc.get("title", "")
-            for fp in function_points:
-                if fp and fp in title:
-                    covered_points += 1
-                    break
-        
-        coverage_rate = covered_points / total_points if total_points > 0 else 0.0
-        
+
+        # 详细覆盖分析
+        covered = []
+        uncovered = []
+
+        for fp in function_points:
+            if not fp:
+                continue
+
+            # 检查是否有测试用例覆盖此功能点
+            is_covered = False
+            covering_cases = []
+
+            for tc in test_cases:
+                title = tc.get("title", "")
+                steps = " ".join(tc.get("steps", tc.get("test_steps", [])))
+                content = f"{title} {steps}"
+
+                # 字符串包含匹配（简化版，后续可升级为语义匹配）
+                if fp.lower() in content.lower():
+                    is_covered = True
+                    covering_cases.append(tc.get("tc_id", tc.get("title", "")))
+
+            if is_covered:
+                covered.append({
+                    "function_point": fp,
+                    "covered_by": covering_cases,
+                    "status": "covered"
+                })
+            else:
+                uncovered.append({
+                    "function_point": fp,
+                    "covered_by": [],
+                    "status": "uncovered"
+                })
+
+        covered_count = len(covered)
+        coverage_rate = covered_count / total_points if total_points > 0 else 0.0
+
         return {
             "total_function_points": total_points,
-            "covered_points": covered_points,
-            "uncovered_points": total_points - covered_points,
+            "covered_points": covered_count,
+            "uncovered_points": len(uncovered),
             "coverage_rate": coverage_rate,
             "coverage_details": {
-                "covered": [],  # 详细覆盖情况
-                "uncovered": []  # 未覆盖的功能点
+                "covered": covered,
+                "uncovered": uncovered
             }
         }
     
@@ -169,8 +196,20 @@ class Phase3Reviewer:
         report += f"| {module} | {coverage['total_function_points']} | "
         report += f"{'✅' if coverage['coverage_rate'] >= 0.8 else '⚠️'} | "
         report += f"覆盖率 {coverage['coverage_rate']:.1%} |\n\n"
-        
+
         report += f"- 功能覆盖率: {coverage['covered_points']}/{coverage['total_function_points']} = {coverage['coverage_rate']:.1%}\n\n"
+
+        # 详细未覆盖功能点
+        uncovered_details = coverage.get("coverage_details", {}).get("uncovered", [])
+        if uncovered_details:
+            report += "**未覆盖的功能点**\n\n"
+            report += "| 功能点 | 状态 |\n"
+            report += "|--------|------|\n"
+            for item in uncovered_details[:10]:  # 最多显示 10 个
+                report += f"| {item['function_point']} | ❌ 未覆盖 |\n"
+            if len(uncovered_details) > 10:
+                report += f"| ... | 还有 {len(uncovered_details) - 10} 个未覆盖 |\n"
+            report += "\n"
         
         # 用例分布
         report += "**用例分布**\n\n"

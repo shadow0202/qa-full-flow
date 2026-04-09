@@ -1,8 +1,10 @@
 """测试Agent - AI测试用例生成与分析"""
 import json
+import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 from src.agent.llm_service import LLMService
+from src.agent.json_parser import extract_json_array
 from src.agent.prompts.test_design import (
     TEST_CASE_GENERATION_SYSTEM_PROMPT,
     TEST_CASE_GENERATION_USER_PROMPT
@@ -10,6 +12,8 @@ from src.agent.prompts.test_design import (
 from src.retrieval.retriever import Retriever
 from src.vector_store.chroma_store import ChromaStore
 from src.embedding.embedder import Embedder
+
+logger = logging.getLogger(__name__)
 
 
 class TestAgent:
@@ -170,37 +174,27 @@ class TestAgent:
             user_prompt=user_prompt
         )
 
-        # 解析JSON
-        try:
-            # 提取JSON部分
-            json_start = response.find("[")
-            json_end = response.rfind("]") + 1
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                test_cases = json.loads(json_str)
+        # 解析JSON - 使用容错解析
+        test_cases = extract_json_array(response)
+        if test_cases:
+            # 补充元数据
+            for i, tc in enumerate(test_cases, 1):
+                tc["doc_id"] = f"TC_GEN_{i:03d}"
+                tc["module"] = module
+                # 保留 LLM 输出的 source 和 confidence 字段
+                # 如果 LLM 没有输出这些字段，设置默认值
+                if "source" not in tc:
+                    tc["source"] = {
+                        "document_type": "AI推断",
+                        "section": "通用测试场景",
+                        "quote": "未提供来源标注"
+                    }
+                if "confidence" not in tc:
+                    tc["confidence"] = 0.5  # 默认中等置信度
 
-                # 补充元数据
-                for i, tc in enumerate(test_cases, 1):
-                    tc["doc_id"] = f"TC_GEN_{i:03d}"
-                    tc["module"] = module
-                    # 保留 LLM 输出的 source 和 confidence 字段
-                    # 如果 LLM 没有输出这些字段，设置默认值
-                    if "source" not in tc:
-                        tc["source"] = {
-                            "document_type": "AI推断",
-                            "section": "通用测试场景",
-                            "quote": "未提供来源标注"
-                        }
-                    if "confidence" not in tc:
-                        tc["confidence"] = 0.5  # 默认中等置信度
-
-                return test_cases
-            else:
-                raise ValueError("未找到JSON格式输出")
-        except Exception as e:
-            print(f"⚠️  LLM输出解析失败: {e}")
-            print(f"原始输出: {response}")
-            # 降级到简单模式
+            return test_cases
+        else:
+            logger.warning("LLM JSON 解析失败，使用简单模板")
             return self._generate_simple(requirement, module, n_examples, references)
     
     def _generate_simple(self, requirement: str, module: str,
