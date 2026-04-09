@@ -43,7 +43,8 @@ class Phase4Deliverer:
 
         # 1. 创建输出目录
         if output_dir is None:
-            output_dir = str(Path(__file__).parent.parent.parent.parent / "data" / "deliverables")
+            from src.config import settings
+            output_dir = str(settings.DATA_DIR / "deliverables")
         
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
