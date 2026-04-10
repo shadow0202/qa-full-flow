@@ -1,19 +1,22 @@
 """Embedding服务 - 负责文本向量化"""
+import logging
 from typing import List
 from sentence_transformers import SentenceTransformer
 from src.qa_full_flow.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 
 class Embedder:
     """Embedding模型服务"""
-    
+
     def __init__(self, model_name: str = None, device: str = None):
         self.model_name = model_name or settings.EMBEDDING_MODEL
         self.device = device or settings.EMBEDDING_DEVICE
-        
-        print(f"📥 正在加载Embedding模型: {self.model_name} (device={self.device})")
+
+        logger.info(f"正在加载Embedding模型: {self.model_name} (device={self.device})")
         self.model = SentenceTransformer(self.model_name, device=self.device)
-        print("✅ Embedding模型加载完成")
+        logger.info("Embedding模型加载完成")
     
     def encode(self, texts: List[str], normalize: bool = True) -> List[List[float]]:
         """

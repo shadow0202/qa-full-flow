@@ -161,66 +161,18 @@ async def execute_phase1(session_id: str):
     """执行阶段1：需求分析与测试点提取"""
     try:
         from src.qa_full_flow.agent.test_session import session_manager
-        from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
-        from src.qa_full_flow.agent.test_phase1_analyzer import Phase1Analyzer
-        from src.qa_full_flow.agent.llm_service import LLMService
-        from src.qa_full_flow.retrieval.retriever import Retriever
-        from src.qa_full_flow.embedding.embedder import Embedder
-        from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 
-        # 获取会话
         session = session_manager.get_session(session_id)
         if not session:
             raise HTTPException(status_code=404, detail="会话不存在")
 
-        # 验证状态转换
         if not session_manager.validate_transition(session, "phase1"):
             raise HTTPException(
                 status_code=400,
                 detail=f"当前状态 {session.status.value} 不允许执行阶段1"
             )
 
-        # 获取Confluence文档
-        confl_loader = ConfluenceLoader(
-            url=settings.confluence_url,
-            email=settings.confluence_email,
-            api_token=settings.confluence_api_token
-        )
-
-        prd_doc = confl_loader.load_from_url(session.config["prd_url"])
-        if not prd_doc:
-            raise HTTPException(status_code=400, detail="无法获取PRD文档")
-
-        tech_docs = confl_loader.load_from_urls(session.config.get("tech_doc_urls", []))
-        other_docs = confl_loader.load_from_urls(session.config.get("other_doc_urls", []))
-
-        # 保存文档到会话
-        session.add_artifact("prd_doc", prd_doc)
-        session.add_artifact("tech_docs", tech_docs)
-        session.add_artifact("other_docs", other_docs)
-
-        # 执行阶段1分析
-        embedder = Embedder()
-        vector_store = ChromaStore()
-        retriever = Retriever(embedder, vector_store)
-        llm = LLMService()
-        analyzer = Phase1Analyzer(llm, retriever)
-
-        result = analyzer.analyze(
-            prd_content=prd_doc.get("content", ""),
-            module=session.config["module"],
-            tech_doc_contents=[d.get("content", "") for d in tech_docs],
-            other_doc_contents=[d.get("content", "") for d in other_docs],
-            use_knowledge_base=session.config.get("use_knowledge_base", True),
-            prd_url=session.config["prd_url"],
-            tech_doc_urls=session.config.get("tech_doc_urls", []),
-            other_doc_urls=session.config.get("other_doc_urls", [])
-        )
-
-        # 保存结果到会话
-        session.add_artifact("analysis_doc", result["analysis_doc"])
-        session.add_artifact("analysis_result", result["analysis_result"])
-        session.update_status("phase1_done")
+        result = _execute_phase1(session)
 
         return TestCasePhase1Response(
             success=True,
@@ -239,7 +191,12 @@ async def execute_phase1(session_id: str):
 
 @router.post("/testcase/session/{session_id}/confirm", response_model=TestCaseConfirmResponse)
 async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
-    """确认阶段结果"""
+    """确认阶段结果
+
+    行为：
+    - confirmed=true: 推进状态，可进入下一阶段
+    - confirmed=false: 记录反馈，并自动重新执行当前阶段
+    """
     try:
         from src.qa_full_flow.agent.test_session import session_manager, SessionStatus
 
@@ -251,12 +208,42 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
             # 用户未确认，记录反馈
             if request.feedback:
                 session.add_feedback(session.status.value, request.feedback)
-            return TestCaseConfirmResponse(
-                success=True,
-                session_id=session_id,
-                status=session.status.value,
-                message=f"已记录反馈，请修改后重新执行当前阶段"
-            )
+
+            # 自动重新执行当前阶段
+            current_status = session.status.value
+            phase_name = current_status.replace("_done", "")  # "phase1_done" → "phase1"
+
+            if phase_name == "phase1":
+                result = _execute_phase1(session)
+                return TestCaseConfirmResponse(
+                    success=True,
+                    session_id=session_id,
+                    status="phase1_done",
+                    message=f"已记录反馈并自动重新执行阶段1"
+                )
+            elif phase_name == "phase2":
+                result = _execute_phase2(session)
+                return TestCaseConfirmResponse(
+                    success=True,
+                    session_id=session_id,
+                    status="phase2_done",
+                    message=f"已记录反馈并自动重新执行阶段2"
+                )
+            elif phase_name == "phase3":
+                result = _execute_phase3(session)
+                return TestCaseConfirmResponse(
+                    success=True,
+                    session_id=session_id,
+                    status="phase3_done",
+                    message=f"已记录反馈并自动重新执行阶段3"
+                )
+            else:
+                return TestCaseConfirmResponse(
+                    success=True,
+                    session_id=session_id,
+                    status=session.status.value,
+                    message=f"已记录反馈，请重新执行当前阶段"
+                )
 
         # 用户确认，推进状态
         status_map = {
@@ -281,13 +268,122 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
         raise HTTPException(status_code=500, detail=f"确认失败: {str(e)}")
 
 
+def _execute_phase1(session) -> Dict:
+    """执行阶段1（提取为独立函数，供 confirm 和 phase1 路由复用）"""
+    from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
+    from src.qa_full_flow.agent.test_phase1_analyzer import Phase1Analyzer
+    from src.qa_full_flow.agent.llm_service import LLMService
+    from src.qa_full_flow.retrieval.retriever import Retriever
+    from src.qa_full_flow.embedding.embedder import Embedder
+    from src.qa_full_flow.vector_store.chroma_store import ChromaStore
+
+    # 获取Confluence文档
+    confl_loader = ConfluenceLoader(
+        url=settings.confluence_url,
+        email=settings.confluence_email,
+        api_token=settings.confluence_api_token
+    )
+
+    prd_doc = confl_loader.load_from_url(session.config["prd_url"])
+    if not prd_doc:
+        raise HTTPException(status_code=400, detail="无法获取PRD文档")
+
+    tech_docs = confl_loader.load_from_urls(session.config.get("tech_doc_urls", []))
+    other_docs = confl_loader.load_from_urls(session.config.get("other_doc_urls", []))
+
+    # 保存文档到会话
+    session.add_artifact("prd_doc", prd_doc)
+    session.add_artifact("tech_docs", tech_docs)
+    session.add_artifact("other_docs", other_docs)
+
+    # 执行阶段1分析
+    embedder = Embedder()
+    vector_store = ChromaStore()
+    retriever = Retriever(embedder, vector_store)
+    llm = LLMService()
+    analyzer = Phase1Analyzer(llm, retriever)
+
+    result = analyzer.analyze(
+        prd_content=prd_doc.get("content", ""),
+        module=session.config["module"],
+        tech_doc_contents=[d.get("content", "") for d in tech_docs],
+        other_doc_contents=[d.get("content", "") for d in other_docs],
+        use_knowledge_base=session.config.get("use_knowledge_base", True),
+        prd_url=session.config["prd_url"],
+        tech_doc_urls=session.config.get("tech_doc_urls", []),
+        other_doc_urls=session.config.get("other_doc_urls", []),
+        feedback_history=session.feedback_history  # 传入反馈历史
+    )
+
+    # 保存结果到会话
+    session.add_artifact("analysis_doc", result["analysis_doc"])
+    session.add_artifact("analysis_result", result["analysis_result"])
+    session.update_status("phase1_done")
+
+    return result
+
+
+def _execute_phase2(session) -> Dict:
+    """执行阶段2（提取为独立函数）"""
+    from src.qa_full_flow.agent.test_phase2_generator import Phase2Generator
+    from src.qa_full_flow.agent.llm_service import LLMService
+
+    analysis_result = session.artifacts.get("analysis_result", {})
+    analysis_doc = session.artifacts.get("analysis_doc", "")
+    prd_doc = session.artifacts.get("prd_doc", {})
+    tech_docs = session.artifacts.get("tech_docs", [])
+    other_docs = session.artifacts.get("other_docs", [])
+
+    llm = LLMService()
+    generator = Phase2Generator(llm)
+
+    result = generator.generate_test_cases(
+        analysis_result=analysis_result,
+        analysis_doc=analysis_doc,
+        module=session.config["module"],
+        n_examples=session.config.get("n_examples", 5),
+        prd_content=prd_doc.get("content", ""),
+        tech_doc_content="\n\n".join([d.get("content", "") for d in tech_docs]),
+        other_doc_content="\n\n".join([d.get("content", "") for d in other_docs]),
+        feedback_history=session.feedback_history  # 传入反馈历史
+    )
+
+    session.add_artifact("test_cases", result["test_cases"])
+    session.add_artifact("test_cases_json", result["json_output"])
+    session.update_status("phase2_done")
+
+    return result
+
+
+def _execute_phase3(session) -> Dict:
+    """执行阶段3（提取为独立函数）"""
+    from src.qa_full_flow.agent.test_phase3_reviewer import Phase3Reviewer
+
+    test_cases = session.artifacts.get("test_cases", [])
+    analysis_result = session.artifacts.get("analysis_result", {})
+    analysis_doc = session.artifacts.get("analysis_doc", "")
+
+    reviewer = Phase3Reviewer()
+
+    result = reviewer.review(
+        test_cases=test_cases,
+        analysis_result=analysis_result,
+        analysis_doc=analysis_doc,
+        module=session.config["module"],
+        feedback_history=session.feedback_history  # 传入反馈历史
+    )
+
+    session.add_artifact("review_report", result["review_report"])
+    session.update_status("phase3_done")
+
+    return result
+
+
 @router.post("/testcase/session/{session_id}/phase2", response_model=TestCasePhase2Response)
 async def execute_phase2(session_id: str):
     """执行阶段2：测试用例设计"""
     try:
         from src.qa_full_flow.agent.test_session import session_manager
-        from src.qa_full_flow.agent.test_phase2_generator import Phase2Generator
-        from src.qa_full_flow.agent.llm_service import LLMService
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -299,31 +395,7 @@ async def execute_phase2(session_id: str):
                 detail=f"当前状态 {session.status.value} 不允许执行阶段2"
             )
 
-        # 获取阶段1的结果
-        analysis_result = session.artifacts.get("analysis_result", {})
-        analysis_doc = session.artifacts.get("analysis_doc", "")
-        prd_doc = session.artifacts.get("prd_doc", {})
-        tech_docs = session.artifacts.get("tech_docs", [])
-        other_docs = session.artifacts.get("other_docs", [])
-
-        # 执行阶段2
-        llm = LLMService()
-        generator = Phase2Generator(llm)
-
-        result = generator.generate_test_cases(
-            analysis_result=analysis_result,
-            analysis_doc=analysis_doc,
-            module=session.config["module"],
-            n_examples=session.config.get("n_examples", 5),
-            prd_content=prd_doc.get("content", ""),
-            tech_doc_content="\n\n".join([d.get("content", "") for d in tech_docs]),
-            other_doc_content="\n\n".join([d.get("content", "") for d in other_docs])
-        )
-
-        # 保存结果
-        session.add_artifact("test_cases", result["test_cases"])
-        session.add_artifact("test_cases_json", result["json_output"])
-        session.update_status("phase2_done")
+        result = _execute_phase2(session)
 
         return TestCasePhase2Response(
             success=True,
@@ -344,7 +416,6 @@ async def execute_phase3(session_id: str):
     """执行阶段3：测试用例自审"""
     try:
         from src.qa_full_flow.agent.test_session import session_manager
-        from src.qa_full_flow.agent.test_phase3_reviewer import Phase3Reviewer
 
         session = session_manager.get_session(session_id)
         if not session:
@@ -356,24 +427,7 @@ async def execute_phase3(session_id: str):
                 detail=f"当前状态 {session.status.value} 不允许执行阶段3"
             )
 
-        # 获取需要的产物
-        test_cases = session.artifacts.get("test_cases", [])
-        analysis_result = session.artifacts.get("analysis_result", {})
-        analysis_doc = session.artifacts.get("analysis_doc", "")
-
-        # 执行阶段3
-        reviewer = Phase3Reviewer()
-
-        result = reviewer.review(
-            test_cases=test_cases,
-            analysis_result=analysis_result,
-            analysis_doc=analysis_doc,
-            module=session.config["module"]
-        )
-
-        # 保存结果
-        session.add_artifact("review_report", result["review_report"])
-        session.update_status("phase3_done")
+        result = _execute_phase3(session)
 
         return TestCasePhase3Response(
             success=True,

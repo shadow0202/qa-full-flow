@@ -1,4 +1,5 @@
 """阶段3: 测试用例自审"""
+import logging
 from typing import Dict, List
 from datetime import datetime
 from src.qa_full_flow.agent.semantic_matcher import (
@@ -11,6 +12,8 @@ from src.qa_full_flow.agent.traceability_verifier import (
     verify_test_case_traceability,
     generate_traceability_report,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Phase3Reviewer:
@@ -25,7 +28,8 @@ class Phase3Reviewer:
         analysis_result: Dict,
         analysis_doc: str,
         module: str,
-        source_documents: Dict[str, str] = None
+        source_documents: Dict[str, str] = None,
+        feedback_history: List[Dict] = None
     ) -> Dict:
         """
         执行自审
@@ -40,30 +44,31 @@ class Phase3Reviewer:
         Returns:
             自审结果
         """
-        print("\n" + "="*60)
-        print("🔍 阶段3：测试用例自审")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("🔍 阶段3：测试用例自审")
+        logger.info("="*60)
 
         # 1. 覆盖率分析
-        print("\n📊 分析覆盖率...")
+        logger.info("\n📊 分析覆盖率...")
         coverage = self._analyze_coverage(test_cases, analysis_result)
 
         # 2. 可追溯性验证（新增）
-        print("\n🔗 验证可追溯性...")
+        logger.info("\n🔗 验证可追溯性...")
         traceability = self._verify_traceability(test_cases, source_documents)
 
         # 3. 质量检查
-        print("\n✅ 执行质量检查...")
+        logger.info("\n✅ 执行质量检查...")
         issues = self._check_quality(test_cases)
 
         # 4. 生成自审报告
-        print("\n📝 生成自审报告...")
+        logger.info("\n📝 生成自审报告...")
         review_report = self._generate_report(
             module=module,
             test_cases=test_cases,
             coverage=coverage,
             issues=issues,
-            traceability=traceability
+            traceability=traceability,
+            feedback_history=feedback_history or []
         )
         
         # 5. 统计信息
@@ -71,10 +76,10 @@ class Phase3Reviewer:
         issues_found = len(issues)
         traceability_rate = traceability.get("traceability_rate", 0.0)
 
-        print(f"\n✅ 阶段3自审完成")
-        print(f"   功能覆盖率: {coverage_rate:.1%}")
-        print(f"   可追溯率: {traceability_rate:.1%}")
-        print(f"   发现问题: {issues_found}个")
+        logger.info(f"\n✅ 阶段3自审完成")
+        logger.info(f"   功能覆盖率: {coverage_rate:.1%}")
+        logger.info(f"   可追溯率: {traceability_rate:.1%}")
+        logger.info(f"   发现问题: {issues_found}个")
 
         return {
             "review_report": review_report,
@@ -238,7 +243,8 @@ class Phase3Reviewer:
         test_cases: List[Dict],
         coverage: Dict,
         issues: List[Dict],
-        traceability: Dict = None
+        traceability: Dict = None,
+        feedback_history: List[Dict] = None
     ) -> str:
         """生成自审报告（模板D）"""
         
@@ -363,7 +369,7 @@ class Phase3Reviewer:
 
         # 8. 自审结论
         report += "\n## 8. 自审结论\n\n"
-        
+
         # 综合评估：覆盖率 + 可追溯率 + 问题数
         coverage_rate = coverage["coverage_rate"]
         traceability_rate = traceability.get("traceability_rate", 1.0) if traceability else 1.0
@@ -390,6 +396,17 @@ class Phase3Reviewer:
             report += f"- 可追溯率: {traceability_rate:.1%} (要求≥60%)\n"
             report += f"- 发现问题: {issue_count}个\n\n"
             report += "**建议**: 需要大幅改进测试用例质量和覆盖率。\n"
+
+        # 9. 用户反馈处理情况（如果有）
+        if feedback_history:
+            report += "\n## 9. 用户反馈处理情况\n\n"
+            report += "| 序号 | 反馈阶段 | 反馈内容 | 处理状态 |\n"
+            report += "|------|---------|---------|----------|\n"
+            for i, fb in enumerate(feedback_history, 1):
+                phase = fb.get("phase", "未知")
+                feedback = fb.get("feedback", "")
+                report += f"| {i} | {phase} | {feedback} | ⚠️ 待重新审核 |\n"
+            report += "\n**注意**: 以上反馈已传递给相关阶段，请重新执行该阶段以改进输出。\n"
 
         return report
     

@@ -1,7 +1,10 @@
 """Cross-Encoder 重排序器 - 精确相关性打分"""
+import logging
 from typing import List, Dict, Optional
 from sentence_transformers import CrossEncoder
 from src.qa_full_flow.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Reranker:
@@ -12,7 +15,7 @@ class Reranker:
     相比 Bi-Encoder（向量检索），Cross-Encoder 能捕捉 query-document 的细粒度交互
     """
 
-    def __init__(self, model_name: str = None, device: str = None):
+    def __init__(self, model_name: Optional[str] = None, device: Optional[str] = None):
         """
         初始化重排序器
 
@@ -23,9 +26,9 @@ class Reranker:
         self.model_name = model_name or settings.RERANKER_MODEL
         self.device = device or settings.RERANKER_DEVICE
 
-        print(f"📥 正在加载Reranker模型: {self.model_name} (device={self.device})")
+        logger.info(f"正在加载Reranker模型: {self.model_name} (device={self.device})")
         self.model = CrossEncoder(self.model_name, device=self.device)
-        print("✅ Reranker模型加载完成")
+        logger.info("Reranker模型加载完成")
 
     def rerank(self, query: str, documents: List[Dict],
                top_k: Optional[int] = None) -> List[Dict]:

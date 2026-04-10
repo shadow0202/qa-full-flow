@@ -1,9 +1,18 @@
 """混合检索器 - 多路召回 + RRF 融合"""
+import os
+import json
+import logging
 import jieba
 from typing import List, Dict, Optional
+from pathlib import Path
 from rank_bm25 import BM25Okapi
 from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 from src.qa_full_flow.embedding.embedder import Embedder
+
+logger = logging.getLogger(__name__)
+
+# 安全配置：默认禁用不安全的 pickle 加载
+_ALLOW_PICKLE_LOADING = os.getenv("ALLOW_PICKLE_LOADING", "false").lower() == "true"
 
 
 class HybridRetriever:
@@ -18,13 +27,15 @@ class HybridRetriever:
     使用 RRF (Reciprocal Rank Fusion) 融合多路结果
     """
 
-    def __init__(self, embedder: Embedder, vector_store: ChromaStore):
+    def __init__(self, embedder: Embedder, vector_store: ChromaStore,
+                 index_path: Optional[str] = None):
         """
         初始化混合检索器
 
         Args:
             embedder: Embedding 模型
             vector_store: 向量数据库
+            index_path: BM25 索引文件路径（默认: ./data/vector_db/bm25_index.json）
         """
         self.embedder = embedder
         self.vector_store = vector_store
@@ -38,6 +49,20 @@ class HybridRetriever:
         # RRF 参数
         self.rrf_k = 60  # RRF 常数
 
+        # BM25 索引文件路径
+        if index_path is None:
+            from src.qa_full_flow.core.config import settings
+            index_dir = Path(settings.CHROMA_PATH).parent
+            index_dir.mkdir(parents=True, exist_ok=True)
+            self.index_path = str(index_dir / "bm25_index.json")
+        else:
+            self.index_path = index_path
+
+        # 元数据检索索引缓存（避免每次查询都重建）
+        self._metadata_module_index: Dict[str, List[int]] = {}
+        self._metadata_tag_index: Dict[str, List[int]] = {}
+        self._metadata_indexed = False
+
     def build_bm25_index(self, documents: List[Dict]):
         """
         构建 BM25 索引
@@ -45,6 +70,7 @@ class HybridRetriever:
         Args:
             documents: 文档列表，每个包含 "doc_id", "content", "metadata"
         """
+        logger.info(f"🔨 正在构建 BM25 索引，共 {len(documents)} 个文档...")
         self.bm25_documents = [doc["content"] for doc in documents]
         self.bm25_doc_ids = [doc["doc_id"] for doc in documents]
         self.bm25_metadatas = [doc["metadata"] for doc in documents]
@@ -52,6 +78,111 @@ class HybridRetriever:
         # 分词并构建索引
         tokenized_docs = [list(jieba.cut_for_search(doc)) for doc in self.bm25_documents]
         self.bm25 = BM25Okapi(tokenized_docs)
+        logger.info("BM25 索引构建完成")
+
+    def save_bm25_index(self) -> bool:
+        """
+        保存 BM25 索引到文件（使用 JSON 格式，避免 pickle 安全风险）
+
+        Returns:
+            是否保存成功
+        """
+        if self.bm25 is None:
+            logger.warning("BM25 索引未构建，无法保存")
+            return False
+
+        try:
+            # 确保目录存在
+            index_dir = Path(self.index_path).parent
+            index_dir.mkdir(parents=True, exist_ok=True)
+
+            # 注意：BM25Okapi 对象无法直接 JSON 序列化
+            # 我们保存重建所需的数据，加载时重新构建
+            index_data = {
+                "documents": self.bm25_documents,
+                "doc_ids": self.bm25_doc_ids,
+                "metadatas": self.bm25_metadatas,
+            }
+
+            # 使用 JSON 格式（安全、可读、跨语言）
+            json_path = self.index_path.replace(".pkl", ".json")
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(index_data, f, ensure_ascii=False, indent=2)
+
+            # 同时更新 .pkl 路径指向（兼容旧代码）
+            self.index_path = json_path
+
+            logger.info(f"BM25 索引已保存到: {json_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"BM25 索引保存失败: {e}", exc_info=True)
+            return False
+
+    def load_bm25_index(self) -> bool:
+        """
+        从文件加载 BM25 索引（支持 JSON 和旧 pickle 格式）
+
+        Returns:
+            是否加载成功
+        """
+        # 优先加载 JSON 格式
+        json_path = self.index_path.replace(".pkl", ".json")
+        if os.path.exists(json_path):
+            return self._load_from_json(json_path)
+
+        # 兼容旧 pickle 格式（警告：默认禁用以防止安全风险）
+        if _ALLOW_PICKLE_LOADING and os.path.exists(self.index_path):
+            logger.warning(
+                f"检测到旧格式索引 {self.index_path}，建议重新构建。"
+                f"如需加载请设置环境变量 ALLOW_PICKLE_LOADING=true（存在安全风险）"
+            )
+            return self._load_from_pickle()
+
+        logger.info(f"BM25 索引文件不存在: {json_path}")
+        return False
+
+    def _load_from_json(self, json_path: str) -> bool:
+        """从 JSON 文件加载索引"""
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                index_data = json.load(f)
+
+            self.bm25_documents = index_data["documents"]
+            self.bm25_doc_ids = index_data["doc_ids"]
+            self.bm25_metadatas = index_data["metadatas"]
+
+            # 重新构建 BM25 索引
+            tokenized_docs = [list(jieba.cut_for_search(doc)) for doc in self.bm25_documents]
+            self.bm25 = BM25Okapi(tokenized_docs)
+
+            self.index_path = json_path
+            logger.info(f"BM25 索引已加载: {json_path} "
+                       f"(共 {len(self.bm25_doc_ids)} 个文档)")
+            return True
+
+        except Exception as e:
+            logger.warning(f"BM25 索引加载失败: {e}", exc_info=True)
+            return False
+
+    def _load_from_pickle(self) -> bool:
+        """从旧 pickle 文件加载（兼容模式）"""
+        try:
+            import pickle
+            with open(self.index_path, "rb") as f:
+                index_data = pickle.load(f)
+
+            self.bm25 = index_data.get("bm25")
+            self.bm25_documents = index_data.get("documents", [])
+            self.bm25_doc_ids = index_data.get("doc_ids", [])
+            self.bm25_metadatas = index_data.get("metadatas", [])
+
+            logger.warning(f"⚠️  已加载旧格式索引，建议调用 save_bm25_index() 转换为新格式")
+            return True
+
+        except Exception as e:
+            logger.warning(f"⚠️  旧格式索引加载失败: {e}")
+            return False
 
     def search(self, query: str,
                n_results: int = 5,
@@ -59,22 +190,30 @@ class HybridRetriever:
                filters: Optional[Dict] = None,
                enable_vector: bool = True,
                enable_bm25: bool = True,
-               enable_metadata: bool = True) -> List[Dict]:
+               enable_metadata: bool = True,
+               bm25_query: Optional[str] = None,
+               metadata_query: Optional[str] = None) -> List[Dict]:
         """
         混合检索
 
         Args:
-            query: 查询文本
+            query: 查询文本（默认用于向量检索）
             n_results: 返回结果数
             top_k_for_rerank: 用于 RRF 融合的候选数（每路）
             filters: 元数据过滤条件
             enable_vector: 是否启用向量检索
             enable_bm25: 是否启用 BM25 检索
             enable_metadata: 是否启用元数据匹配
+            bm25_query: BM25 检索专用 query（默认使用 query）
+            metadata_query: 元数据检索专用 query（默认使用 query）
 
         Returns:
             融合后的检索结果
         """
+        # 如果不传专用 query，默认使用主 query
+        actual_bm25_query = bm25_query or query
+        actual_metadata_query = metadata_query or query
+
         all_results = {}  # doc_id -> result
 
         # 第1路：向量语义检索
@@ -84,12 +223,12 @@ class HybridRetriever:
 
         # 第2路：BM25 关键词检索
         if enable_bm25 and self.bm25:
-            bm25_results = self._bm25_search(query, top_k_for_rerank, filters)
+            bm25_results = self._bm25_search(actual_bm25_query, top_k_for_rerank, filters)
             self._merge_results(all_results, bm25_results, weight=1.0)
 
         # 第3路：元数据匹配
         if enable_metadata:
-            metadata_results = self._metadata_search(query, top_k_for_rerank, filters)
+            metadata_results = self._metadata_search(actual_metadata_query, top_k_for_rerank, filters)
             self._merge_results(all_results, metadata_results, weight=1.5)  # 元数据匹配权重更高
 
         # 转换为列表并排序
@@ -160,9 +299,39 @@ class HybridRetriever:
 
         return results[:n_results]
 
+    def _build_metadata_index(self, all_docs: Dict) -> None:
+        """
+        构建元数据索引（缓存到实例变量，避免每次查询都重建）
+
+        Args:
+            all_docs: 从向量库获取的所有文档
+        """
+        self._metadata_module_index.clear()
+        self._metadata_tag_index.clear()
+
+        for i, metadata in enumerate(all_docs.get("metadatas", [])):
+            # 构建 module 索引
+            module = metadata.get("module", "").strip()
+            if module:
+                module_lower = module.lower()
+                if module_lower not in self._metadata_module_index:
+                    self._metadata_module_index[module_lower] = []
+                self._metadata_module_index[module_lower].append(i)
+
+            # 构建 tags 索引
+            tags = metadata.get("tags", "").strip()
+            if tags:
+                tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+                for tag in tag_list:
+                    if tag not in self._metadata_tag_index:
+                        self._metadata_tag_index[tag] = []
+                    self._metadata_tag_index[tag].append(i)
+
+        self._metadata_indexed = True
+
     def _metadata_search(self, query: str, n_results: int,
                         filters: Optional[Dict] = None) -> List[Dict]:
-        """元数据匹配检索（标题、标签等）"""
+        """元数据匹配检索（模块、标签等）"""
         # 获取所有文档
         try:
             all_docs = self.vector_store.get()
@@ -172,30 +341,70 @@ class HybridRetriever:
         if not all_docs.get("ids"):
             return []
 
-        results = []
+        # 如果索引未构建，先构建
+        if not self._metadata_indexed:
+            self._build_metadata_index(all_docs)
+
+        # 对查询文本分词
+        query_tokens = list(jieba.cut_for_search(query))
+        query_tokens = [t.strip().lower() for t in query_tokens if t.strip()]
         query_lower = query.lower()
 
-        for i, (doc_id, doc, metadata) in enumerate(zip(
-            all_docs["ids"],
-            all_docs["documents"],
-            all_docs["metadatas"]
-        )):
+        if not query_tokens:
+            return []
+
+        # 收集候选文档（只遍历匹配的文档，而非全量）
+        candidate_indices = set()
+
+        # 通过 module 索引查找
+        for token in query_tokens:
+            if token in self._metadata_module_index:
+                candidate_indices.update(self._metadata_module_index[token])
+
+        # 通过 tags 索引查找
+        for token in query_tokens:
+            if token in self._metadata_tag_index:
+                candidate_indices.update(self._metadata_tag_index[token])
+
+        # 如果没有候选文档，返回空
+        if not candidate_indices:
+            return []
+
+        results = []
+
+        # 只对候选文档计算分数
+        for i in candidate_indices:
+            doc_id = all_docs["ids"][i]
+            doc = all_docs["documents"][i]
+            metadata = all_docs["metadatas"][i]
+
             score = 0.0
 
-            # 标题匹配
-            title = metadata.get("title", "")
-            if query_lower in title.lower():
-                score += 10.0
+            # 模块精确匹配（权重最高）
+            module = metadata.get("module", "").strip()
+            if module:
+                module_lower = module.lower()
+                # 精确匹配（查询词等于模块名）
+                if any(t == module_lower for t in query_tokens):
+                    score += 20.0
+                # 包含匹配（查询词是模块名的子串）
+                elif any(t in module_lower for t in query_tokens):
+                    score += 10.0
+                # 反向包含匹配（模块名是查询词的子串）
+                elif module_lower in query_lower:
+                    score += 5.0
 
-            # 标签匹配
-            tags = metadata.get("tags", "")
-            if tags and query_lower in tags.lower():
-                score += 5.0
-
-            # 模块匹配
-            module = metadata.get("module", "")
-            if query_lower in module.lower():
-                score += 3.0
+            # 标签匹配（按逗号拆分后匹配）
+            tags = metadata.get("tags", "").strip()
+            if tags:
+                tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+                # 精确匹配标签
+                for token in query_tokens:
+                    if token in tag_list:
+                        score += 5.0
+                    # 标签包含查询词
+                    elif any(token in tag for tag in tag_list):
+                        score += 2.0
 
             if score > 0:
                 results.append({
@@ -236,6 +445,9 @@ class HybridRetriever:
     def _apply_filters(self, results: List[Dict],
                        filters: Dict) -> List[Dict]:
         """应用元数据过滤"""
+        if not filters:
+            return results
+            
         filtered = []
         for result in results:
             match = True

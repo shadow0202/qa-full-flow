@@ -1,10 +1,13 @@
 """数据管道 - 编排数据加载、向量化和入库"""
+import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
 from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
 from src.qa_full_flow.embedding.embedder import Embedder
 from src.qa_full_flow.vector_store.chroma_store import ChromaStore
+
+logger = logging.getLogger(__name__)
 
 
 class DataPipeline:
@@ -38,7 +41,7 @@ class DataPipeline:
         Returns:
             入库统计信息
         """
-        print(f"\n🔄 开始数据入库...")
+        logger.info("开始数据入库...")
 
         # 使用传入的 chunker 或默认
         active_chunker = chunker or self.chunker
@@ -47,7 +50,7 @@ class DataPipeline:
         documents = loader.load(source)
 
         if not documents:
-            print("⚠️  没有可入库的数据")
+            logger.warning("没有可入库的数据")
             return {"loaded": 0, "ingested": 0, "skipped": 0, "updated": 0}
 
         # 2. 检查已存在的文档
@@ -55,19 +58,19 @@ class DataPipeline:
             existing_ids = self._get_existing_ids()
             new_docs = [doc for doc in documents if doc["doc_id"] not in existing_ids]
             skipped_count = len(documents) - len(new_docs)
-            print(f"📊 新文档: {len(new_docs)}, 已存在: {skipped_count}")
+            logger.info(f"新文档: {len(new_docs)}, 已存在: {skipped_count}")
         elif update_mode == "incremental":
             # 增量更新：对比时间戳
             new_docs, skipped_count, updated_count = self._check_for_updates(documents)
-            print(f"📊 新文档: {len(new_docs)}, 需更新: {updated_count}, 已最新: {skipped_count}")
+            logger.info(f"新文档: {len(new_docs)}, 需更新: {updated_count}, 已最新: {skipped_count}")
         else:
             # force 模式：全部更新
             new_docs = documents
             skipped_count = 0
-            print(f"📊 强制更新模式: {len(documents)} 条文档")
+            logger.info(f"强制更新模式: {len(documents)} 条文档")
 
         if not new_docs:
-            print("✅ 所有数据已是最新，跳过入库")
+            logger.info("所有数据已是最新，跳过入库")
             return {
                 "loaded": len(documents),
                 "ingested": 0,
@@ -77,12 +80,12 @@ class DataPipeline:
 
         # 3. 文档切分（如果启用了 chunker）
         if active_chunker:
-            print(f"✂️  正在切分文档...")
+            logger.info("正在切分文档...")
             new_docs = active_chunker.split_documents(new_docs)
-            print(f"📊 切分结果: {len(documents)} 条文档 → {len(new_docs)} 个块")
+            logger.info(f"切分结果: {len(documents)} 条文档 → {len(new_docs)} 个块")
 
         # 4. 向量化
-        print(f"🧠 正在向量化 {len(new_docs)} 条文档...")
+        logger.info(f"正在向量化 {len(new_docs)} 条文档...")
         contents = [doc["content"] for doc in new_docs]
         embeddings = self.embedder.encode(contents, normalize=True)
 
@@ -97,10 +100,9 @@ class DataPipeline:
                 "version": doc["metadata"].get("version", ""),
                 "author": doc["metadata"].get("author", ""),
                 "create_date": doc["metadata"].get("create_date", ""),
-                "last_updated": doc["metadata"].get("last_updated", ""),  # 新增：数据源更新时间
-                "synced_at": datetime.now().isoformat(),  # 新增：我们同步的时间
+                "last_updated": doc["metadata"].get("last_updated", ""),
+                "synced_at": datetime.now().isoformat(),
             }
-            # 如果文档被切分，添加 chunk 元数据
             if "chunk_id" in doc:
                 metadata["chunk_id"] = doc["chunk_id"]
                 metadata["chunk_index"] = doc["chunk_index"]
@@ -108,7 +110,7 @@ class DataPipeline:
             metadatas.append(metadata)
 
         # 6. 写入向量库
-        print(f"💾 正在写入向量库...")
+        logger.info("正在写入向量库...")
         ids = [doc["doc_id"] for doc in new_docs]
         self.vector_store.upsert(
             ids=ids,
@@ -117,10 +119,7 @@ class DataPipeline:
             metadatas=metadatas
         )
 
-        print(f"✅ 入库完成: {len(new_docs)} 条新文档")
-        
-        # 7. 更新 BM25 索引（如果检索器可用）
-        self._update_bm25_index(new_docs)
+        logger.info(f"入库完成: {len(new_docs)} 条新文档")
 
         return {
             "loaded": len(documents),
@@ -129,17 +128,44 @@ class DataPipeline:
             "updated": len(new_docs)  # 简化统计，实际应该区分新增和更新
         }
 
-    def _update_bm25_index(self, new_docs: List[Dict]) -> None:
+    def rebuild_bm25_index(self, retriever) -> int:
         """
-        更新 BM25 索引
+        重建 BM25 索引并保存（统一入口）
 
         Args:
-            new_docs: 新增/更新的文档列表
+            retriever: Retriever 实例（用于调用 build_bm25_index 和 save_bm25_index）
+
+        Returns:
+            重建的文档数量
         """
-        # 注意：此方法需要在外部检索器中调用，这里仅打印提示
-        if new_docs:
-            print(f"ℹ️  如需启用 BM25 混合检索，请调用 retriever.hybrid_retriever.build_bm25_index() 重建索引")
-    
+        try:
+            all_docs = self.vector_store.get()
+            if not all_docs.get("ids"):
+                logger.warning("向量库中无文档，跳过 BM25 索引重建")
+                return 0
+
+            documents = [
+                {
+                    "doc_id": doc_id,
+                    "content": content,
+                    "metadata": metadata
+                }
+                for doc_id, content, metadata in zip(
+                    all_docs["ids"],
+                    all_docs["documents"],
+                    all_docs["metadatas"]
+                )
+            ]
+
+            retriever.build_bm25_index(documents)
+            retriever.save_bm25_index()
+            logger.info(f"BM25 索引已重建并保存，共 {len(documents)} 个文档")
+            return len(documents)
+
+        except Exception as e:
+            logger.error(f"BM25 索引重建失败: {e}")
+            return 0
+
     def _get_existing_ids(self) -> set:
         """获取已存在的文档ID"""
         try:
@@ -188,7 +214,7 @@ class DataPipeline:
                     # 数据源有更新，需要更新
                     new_docs.append(doc)
                     updated_count += 1
-                    print(f"   🔄 文档 {doc_id} 有更新: {existing_updated} → {source_updated}")
+                    logger.info(f"文档 {doc_id} 有更新: {existing_updated} → {source_updated}")
                 else:
                     # 已是最新，跳过
                     skipped_count += 1

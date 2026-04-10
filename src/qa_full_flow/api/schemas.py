@@ -8,6 +8,7 @@ class IngestRequest(BaseModel):
     source_path: str = Field(..., description="数据源文件路径")
     source_type: str = Field("jsonl", description="数据源类型")
     skip_existing: bool = Field(True, description="是否跳过已存在的数据")
+    update_mode: str = Field("skip", description="更新模式: skip/incremental/force")
 
 
 class IngestResponse(BaseModel):

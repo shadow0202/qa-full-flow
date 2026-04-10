@@ -15,15 +15,15 @@ class ChromaStore:
         self.collection_name = collection_name or settings.CHROMA_COLLECTION_NAME
 
         try:
-            logger.info(f"📥 正在初始化ChromaDB: {self.path}")
+            logger.info(f"正在初始化ChromaDB: {self.path}")
             self.client = chromadb.PersistentClient(path=self.path)
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-            logger.info(f"✅ ChromaDB集合已就绪: {self.collection_name} (当前数据量: {self.collection.count()})")
+            logger.info(f"ChromaDB集合已就绪: {self.collection_name} (当前数据量: {self.collection.count()})")
         except Exception as e:
-            logger.error(f"❌ ChromaDB初始化失败: {e}")
+            logger.error(f"ChromaDB初始化失败: {e}")
             raise
 
     def count(self) -> int:
@@ -51,9 +51,9 @@ class ChromaStore:
                 documents=documents,
                 metadatas=metadatas
             )
-            logger.debug(f"✅ 成功upsert {len(ids)} 个文档")
+            logger.debug(f"成功upsert {len(ids)} 个文档")
         except Exception as e:
-            logger.error(f"❌ ChromaDB upsert失败: {e}")
+            logger.error(f"ChromaDB upsert失败: {e}")
             raise
     
     def query(self, query_embeddings: List[List[float]], 
@@ -90,7 +90,7 @@ class ChromaStore:
 
             return self.collection.query(**query_params)
         except Exception as e:
-            logger.error(f"❌ ChromaDB查询失败: {e}")
+            logger.error(f"ChromaDB查询失败: {e}")
             raise
 
     def get(self, ids: Optional[List[str]] = None, 

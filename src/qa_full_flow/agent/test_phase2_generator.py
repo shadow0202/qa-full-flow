@@ -1,10 +1,13 @@
 """阶段2: 测试用例设计生成"""
 import json
+import logging
 from datetime import datetime
 from typing import Dict, List
 from src.qa_full_flow.agent.llm_service import LLMService
 from src.qa_full_flow.agent.json_parser import extract_json_array
 from src.qa_full_flow.agent.prompt_manager import get_prompt_manager
+
+logger = logging.getLogger(__name__)
 
 
 class Phase2Generator:
@@ -22,7 +25,8 @@ class Phase2Generator:
         n_examples: int = 5,
         prd_content: str = "",
         tech_doc_content: str = "",
-        other_doc_content: str = ""
+        other_doc_content: str = "",
+        feedback_history: List[Dict] = None
     ) -> Dict:
         """
         生成测试用例
@@ -39,34 +43,35 @@ class Phase2Generator:
         Returns:
             生成结果（包含JSON用例和统计）
         """
-        print("\n" + "="*60)
-        print("🧪 阶段2：测试用例设计")
-        print("="*60)
-        
+        logger.info("\n" + "="*60)
+        logger.info("🧪 阶段2：测试用例设计")
+        logger.info("="*60)
+
         # 1. 调用LLM生成测试用例
-        print("\n🤖 调用LLM生成测试用例...")
+        logger.info("\n🤖 调用LLM生成测试用例...")
         test_cases = self._call_llm(
             analysis_doc=analysis_doc,
             module=module,
             n_examples=n_examples,
             prd_content=prd_content,
             tech_doc_content=tech_doc_content,
-            other_doc_content=other_doc_content
+            other_doc_content=other_doc_content,
+            feedback_history=feedback_history or []
         )
         
         # 2. 转换为JSON模板格式
-        print("\n📝 转换为JSON格式...")
+        logger.info("\n📝 转换为JSON格式...")
         json_output = self._convert_to_json_template(
             test_cases=test_cases,
             module=module
         )
-        
+
         # 3. 统计信息
         statistics = self._calculate_statistics(test_cases)
-        
-        print(f"\n✅ 阶段2生成完成")
-        print(f"   用例总数: {statistics['total_test_cases']}")
-        print(f"   优先级分布: P0={statistics['priority_distribution'].get('P0', 0)}, "
+
+        logger.info(f"\n✅ 阶段2生成完成")
+        logger.info(f"   用例总数: {statistics['total_test_cases']}")
+        logger.info(f"   优先级分布: P0={statistics['priority_distribution'].get('P0', 0)}, "
               f"P1={statistics['priority_distribution'].get('P1', 0)}, "
               f"P2={statistics['priority_distribution'].get('P2', 0)}")
         
@@ -84,7 +89,8 @@ class Phase2Generator:
         n_examples: int,
         prd_content: str,
         tech_doc_content: str,
-        other_doc_content: str
+        other_doc_content: str,
+        feedback_history: List[Dict]
     ) -> List[Dict]:
         """调用LLM生成测试用例（基于 Phase1 结构化结果）"""
 
@@ -107,6 +113,20 @@ class Phase2Generator:
             n_examples=n_examples
         )
 
+        # 添加用户反馈历史（如果存在）
+        if feedback_history:
+            feedback_items = []
+            for i, fb in enumerate(feedback_history, 1):
+                feedback_items.append(
+                    f"{i}. **{fb.get('phase', '未知阶段')}**: {fb.get('feedback', '')}"
+                )
+            feedback_text = (
+                f"\n\n## 📝 用户反馈历史（请根据以下反馈调整本次输出）\n"
+                + "\n".join(feedback_items)
+                + "\n\n**重要**: 请认真分析以上反馈，针对性地改进测试用例质量。"
+            )
+            user_prompt += feedback_text
+
         response = self.llm.generate(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -124,7 +144,7 @@ class Phase2Generator:
 
         # 如果解析失败，使用降级方案
         if test_cases is None:
-            print(f"⚠️  LLM输出解析失败，使用降级方案")
+            logger.warning(f"LLM输出解析失败，使用降级方案")
             return self._generate_simple_cases(analysis_doc, module, n_examples)
 
         # 补充必要字段
@@ -191,7 +211,7 @@ class Phase2Generator:
             
         except Exception as e:
             # 解析失败，返回原文摘要
-            print(f"⚠️  功能点提取失败，使用原文摘要: {e}")
+            logger.warning(f"功能点提取失败，使用原文摘要: {e}")
             return analysis_doc[:1500] if isinstance(analysis_doc, str) else str(analysis_doc)[:1500]
 
     def _generate_simple_cases(

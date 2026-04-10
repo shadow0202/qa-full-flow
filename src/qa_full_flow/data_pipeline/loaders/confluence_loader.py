@@ -1,8 +1,12 @@
 """Confluence数据加载器 - 从Confluence拉取文档和知识库"""
 import requests
+import logging
+import jieba.analyse
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
+
+logger = logging.getLogger(__name__)
 
 
 class ConfluenceLoader(BaseLoader):
@@ -33,35 +37,44 @@ class ConfluenceLoader(BaseLoader):
         })
         self.session.verify = verify_ssl
         
-        print(f"🔗 Confluence连接器已初始化: {self.url}")
+        logger.info(f"Confluence连接器已初始化: {self.url}")
+
+    def close(self):
+        """关闭 Session，释放连接资源"""
+        if hasattr(self, 'session'):
+            self.session.close()
+
+    def __del__(self):
+        """析构函数，确保连接被关闭"""
+        self.close()
     
     def load(self, source: str = "",
              space_key: str = "",
              max_results: int = 50) -> List[Dict]:
         """
         从Confluence加载文档
-        
+
         Args:
             source: 未使用（保持接口一致性）
             space_key: 空间Key（如"TEST"、"DEV"等）
             max_results: 最大结果数
-            
+
         Returns:
             文档列表
         """
-        print(f"\n📥 正在从Confluence拉取文档...")
-        
+        logger.info(f"正在从Confluence拉取文档... (space={space_key or 'all'}, max={max_results})")
+
         # 获取页面列表
         pages = self._fetch_pages(space_key, max_results)
-        
+
         # 转换为标准格式
         documents = []
         for page in pages:
             doc = self._parse_page(page)
             if doc:
                 documents.append(doc)
-        
-        print(f"✅ Confluence数据加载完成: {len(documents)} 条")
+
+        logger.info(f"Confluence数据加载完成: {len(documents)} 条")
         return documents
     
     def load_space(self, space_key: str, max_results: int = 50) -> List[Dict]:
@@ -70,16 +83,16 @@ class ConfluenceLoader(BaseLoader):
     
     def load_test_docs(self, max_results: int = 50) -> List[Dict]:
         """便捷方法：加载测试相关文档"""
-        print("🔍 搜索测试相关文档...")
+        logger.info("搜索测试相关文档...")
         pages = self._search_pages("测试", max_results)
-        
+
         documents = []
         for page in pages:
             doc = self._parse_page(page)
             if doc:
                 documents.append(doc)
-        
-        print(f"✅ 测试文档加载完成: {len(documents)} 条")
+
+        logger.info(f"测试文档加载完成: {len(documents)} 条")
         return documents
     
     def _fetch_pages(self, space_key: str, max_results: int) -> List[Dict]:
@@ -98,10 +111,10 @@ class ConfluenceLoader(BaseLoader):
             response = self.session.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            
+
             results = data.get("results", [])
-            print(f"   查询到 {len(results)} 个页面")
-            
+            logger.info(f"查询到 {len(results)} 个页面")
+
             return results
         except Exception as e:
             raise Exception(f"Confluence API调用失败: {str(e)}")
@@ -119,13 +132,13 @@ class ConfluenceLoader(BaseLoader):
             response = self.session.get(url, params=params)
             response.raise_for_status()
             data = response.json()
-            
+
             results = data.get("results", [])
-            print(f"   搜索到 {len(results)} 个页面")
-            
+            logger.info(f"搜索到 {len(results)} 个页面")
+
             return results
         except Exception as e:
-            print(f"⚠️  搜索失败: {e}，返回空列表")
+            logger.warning(f"搜索失败: {e}")
             return []
     
     def _parse_page(self, page: Dict) -> Optional[Dict]:
@@ -170,17 +183,26 @@ class ConfluenceLoader(BaseLoader):
             # 确定来源类型
             source_type = self._classify_page(title, content_body)
 
+            # 自动提取关键词作为 tags（TF-IDF 算法）
+            tags = self._extract_keywords(content, top_k=10)
+
+            # 提取更新时间（v2 API 使用 version.updatedAt）
+            last_updated = version.get("updatedAt", "")
+            if not last_updated and version.get("createdAt"):
+                last_updated = version.get("createdAt", "")
+
             return {
                 "doc_id": f"CONFL_{page_id}",
                 "content": content,
                 "source_type": source_type,
                 "module": space_id,
-                "tags": [],  # v2 API需要额外请求labels
+                "tags": tags,  # 自动填充关键词
                 "metadata": {
                     "priority": "P2",  # 文档默认P2
                     "version": f"v{version_number}",
                     "author": author_id,
                     "create_date": created[:10] if created else "",
+                    "last_updated": last_updated,  # 数据源更新时间（用于增量同步）
                     "space_key": space_id,
                     "space_name": space_id,
                     "page_title": title,
@@ -188,7 +210,7 @@ class ConfluenceLoader(BaseLoader):
                 }
             }
         except Exception as e:
-            print(f"⚠️  解析Confluence页面失败: {e}")
+            logger.warning(f"解析Confluence页面失败: {e}")
             return None
     
     def _get_page_body(self, page_id: str) -> str:
@@ -225,7 +247,7 @@ class ConfluenceLoader(BaseLoader):
             text = self._html_to_text(body)
             return text
         except Exception as e:
-            print(f"⚠️  获取页面内容失败: {e}")
+            logger.warning(f"获取页面内容失败: {e}")
             return ""
     
     def _html_to_text(self, html: str) -> str:
@@ -249,7 +271,7 @@ class ConfluenceLoader(BaseLoader):
         """根据标题和内容分类"""
         title_lower = title.lower()
         content_lower = content.lower()
-        
+
         if any(kw in title_lower for kw in ["测试", "test", "用例", "case"]):
             return "test_case"
         elif any(kw in title_lower for kw in ["需求", "requirement", "prd"]):
@@ -258,23 +280,41 @@ class ConfluenceLoader(BaseLoader):
             return "bug_report"
         else:
             return "business_rule"  # 默认归类为业务规则
+
+    def _extract_keywords(self, content: str, top_k: int = 10) -> List[str]:
+        """
+        从文档内容中提取关键词（使用 TF-IDF 算法）
+
+        Args:
+            content: 文档内容
+            top_k: 提取关键词数量
+
+        Returns:
+            关键词列表
+        """
+        try:
+            # 使用 jieba 的 TF-IDF 算法提取关键词
+            keywords = jieba.analyse.extract_tags(content, topK=top_k, withWeight=False)
+            return keywords
+        except Exception as e:
+            logger.warning(f"关键词提取失败: {e}")
+            return []
     
     def test_connection(self) -> bool:
         """测试连接是否正常（使用v2 API）"""
         try:
-            # v2 API: GET /wiki/api/v2/pages
             url = f"{self.url}/wiki/api/v2/pages"
             params = {"limit": 1}
             response = self.session.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             pages = data.get("results", [])
-            print(f"✅ Confluence连接成功（v2 API），可用页面数: {len(pages)}")
+            logger.info(f"Confluence连接成功（v2 API），可用页面数: {len(pages)}")
             if pages:
-                print(f"   示例页面: {pages[0].get('title', '')}")
+                logger.info(f"示例页面: {pages[0].get('title', '')}")
             return True
         except Exception as e:
-            print(f"❌ Confluence连接失败: {e}")
+            logger.error(f"Confluence连接失败: {e}")
             return False
 
     def load_from_url(self, url: str) -> Optional[Dict]:
@@ -291,65 +331,64 @@ class ConfluenceLoader(BaseLoader):
             # 从URL中提取页面ID
             page_id = self._extract_page_id(url)
             if not page_id:
-                print(f"⚠️  无法从URL提取页面ID: {url}")
+                logger.warning(f"无法从URL提取页面ID: {url}")
                 return None
-            
-            print(f"📥 正在从URL获取Confluence页面: {url}")
-            
+
+            logger.info(f"正在从URL获取Confluence页面: {url}")
+
             # 获取页面内容
             page_body = self._get_page_body(page_id)
             if not page_body:
-                print(f"⚠️  无法获取页面内容: {url}")
+                logger.warning(f"无法获取页面内容: {url}")
                 return None
-            
+
             # 获取页面元数据
             page_meta = self._get_page_metadata(page_id)
             if not page_meta:
-                print(f"⚠️  无法获取页面元数据: {url}")
+                logger.warning(f"无法获取页面元数据: {url}")
                 return None
-            
+
             # 构建文档
             doc = self._parse_page(page_meta)
             if doc:
-                # 覆盖URL为用户提供的原始URL
                 doc["metadata"]["original_url"] = url
-                print(f"✅ 成功获取页面: {doc.get('metadata', {}).get('page_title', '')}")
-            
+                logger.info(f"成功获取页面: {doc.get('metadata', {}).get('page_title', '')}")
+
             return doc
-            
+
         except Exception as e:
-            print(f"❌ 从URL加载Confluence页面失败: {e}")
+            logger.error(f"从URL加载Confluence页面失败: {e}")
             return None
 
     def load_from_urls(self, urls: List[str]) -> List[Dict]:
         """
         批量通过URL获取多个Confluence页面
-        
+
         Args:
             urls: Confluence页面URL列表
-            
+
         Returns:
             解析后的文档列表
         """
         if not urls:
             return []
-        
-        print(f"\n📥 正在批量获取 {len(urls)} 个Confluence页面...")
-        
+
+        logger.info(f"正在批量获取 {len(urls)} 个Confluence页面...")
+
         documents = []
         success_count = 0
         fail_count = 0
-        
+
         for i, url in enumerate(urls, 1):
-            print(f"  [{i}/{len(urls)}] 处理: {url}")
+            logger.debug(f"[{i}/{len(urls)}] 处理: {url}")
             doc = self.load_from_url(url)
             if doc:
                 documents.append(doc)
                 success_count += 1
             else:
                 fail_count += 1
-        
-        print(f"\n✅ 批量获取完成: 成功 {success_count} 个，失败 {fail_count} 个")
+
+        logger.info(f"批量获取完成: 成功 {success_count} 个，失败 {fail_count} 个")
         return documents
 
     def _extract_page_id(self, url: str) -> Optional[str]:
@@ -387,7 +426,7 @@ class ConfluenceLoader(BaseLoader):
             return None
             
         except Exception as e:
-            print(f"⚠️  提取页面ID失败: {e}")
+            logger.warning(f"提取页面ID失败: {e}")
             return None
 
     def _get_page_metadata(self, page_id: str) -> Optional[Dict]:
@@ -408,5 +447,5 @@ class ConfluenceLoader(BaseLoader):
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"⚠️  获取页面元数据失败: {e}")
+            logger.warning(f"获取页面元数据失败: {e}")
             return None

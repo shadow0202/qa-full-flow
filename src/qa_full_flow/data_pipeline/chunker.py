@@ -9,7 +9,7 @@ class RecursiveCharacterSplitter:
 
     切分策略（按优先级）：
     1. 按 Markdown 一级标题 (# ) 切分
-    2. 按 Markdown 二级标题 (## ) 切分
+    2. 按 Markdown 二级标题 (## ) 切分`
     3. 按 Markdown 三级标题 (### ) 切分
     4. 按段落 (\n\n) 切分
     5. 按句子 (. 。! ！? ？) 切分

@@ -1,10 +1,14 @@
 """测试用例会话管理器 - 状态机模式"""
 import uuid
 import json
+import logging
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from enum import Enum
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class SessionStatus(str, Enum):
@@ -75,28 +79,33 @@ class TestSession:
 
 
 class SessionManager:
-    """会话管理器（单例）"""
-    
+    """会话管理器（单例 + 线程安全）"""
+
     _instance = None
     _sessions: Dict[str, TestSession] = {}
-    
+    _lock = threading.Lock()  # 线程锁
+
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            with cls._lock:
+                if cls._instance is None:  # 双重检查锁定
+                    cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def create_session(self, config: Dict) -> TestSession:
-        """创建新会话"""
-        session_id = str(uuid.uuid4())[:8]
-        session = TestSession(session_id, config)
-        self._sessions[session_id] = session
-        print(f"✅ 创建会话: {session_id}")
-        return session
-    
+        """创建新会话（线程安全）"""
+        with self._lock:
+            session_id = str(uuid.uuid4())[:8]
+            session = TestSession(session_id, config)
+            self._sessions[session_id] = session
+            logger.info(f"✅ 创建会话: {session_id}")
+            return session
+
     def get_session(self, session_id: str) -> Optional[TestSession]:
-        """获取会话"""
-        return self._sessions.get(session_id)
-    
+        """获取会话（线程安全）"""
+        with self._lock:
+            return self._sessions.get(session_id)
+
     def validate_transition(self, session: TestSession, action: str) -> bool:
         """验证状态转换是否合法"""
         valid_transitions = {
@@ -110,37 +119,38 @@ class SessionManager:
             "phase3": [SessionStatus.PHASE2_CONFIRMED],
             "phase4": [SessionStatus.PHASE3_CONFIRMED]
         }
-        
+
         allowed_statuses = valid_transitions.get(action, [])
         return session.status in allowed_statuses
-    
+
     def cleanup_old_sessions(self, max_age_hours: int = 24):
-        """清理过期会话"""
+        """清理过期会话（线程安全）"""
         now = datetime.now()
-        to_remove = []
-        
-        for session_id, session in self._sessions.items():
-            created = datetime.fromisoformat(session.created_at)
-            if (now - created).total_seconds() > max_age_hours * 3600:
-                to_remove.append(session_id)
-        
-        for session_id in to_remove:
-            del self._sessions[session_id]
-        
+        with self._lock:
+            to_remove = []
+            for session_id, session in self._sessions.items():
+                created = datetime.fromisoformat(session.created_at)
+                if (now - created).total_seconds() > max_age_hours * 3600:
+                    to_remove.append(session_id)
+
+            for session_id in to_remove:
+                del self._sessions[session_id]
+
         if to_remove:
-            print(f"🧹 清理了 {len(to_remove)} 个过期会话")
-    
+            logger.info(f"🧹 清理了 {len(to_remove)} 个过期会话")
+
     def get_all_sessions(self) -> List[Dict]:
-        """获取所有会话摘要"""
-        return [
-            {
-                "session_id": sid,
-                "status": s.status.value,
-                "module": s.config.get("module", ""),
-                "created_at": s.created_at
-            }
-            for sid, s in self._sessions.items()
-        ]
+        """获取所有会话摘要（线程安全）"""
+        with self._lock:
+            return [
+                {
+                    "session_id": sid,
+                    "status": s.status.value,
+                    "module": s.config.get("module", ""),
+                    "created_at": s.created_at
+                }
+                for sid, s in self._sessions.items()
+            ]
 
 
 # 全局会话管理器实例

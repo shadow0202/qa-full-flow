@@ -1,149 +1,225 @@
-# QA-Full-Flow: AI测试用例与知识库系统
+# QA-Full-Flow: AI 测试知识库与用例生成系统
 
-> 实验性的 AI 测试知识库与用例生成系统，面向测试开发工程师的工程化探索
-
-## 🎯 项目简介
-
-QA-Full-Flow 是一个**实验性** AI 测试知识库与用例生成系统，提供：
-
-- 📚 **统一知识管理** - 对接 JIRA/Confluence/本地文件，构建向量知识库
-- 🔍 **智能语义检索** - 三路召回（向量+BM25+元数据）+ RRF 融合 + Cross-Encoder 重排序
-- 🤖 **AI 用例生成** - 四阶段工作流（需求分析→用例设计→自审→交付），防幻觉机制保障
-- 🔌 **工程化架构** - 模块化设计、依赖注入、Prompt 可配置化、完整类型注解
-- 🚀 **生产就绪** - Docker 部署、健康检查、日志轮转、热重载
+> 基于 RAG 架构的测试知识库管理与智能用例生成平台
 
 ---
 
-## 🏗️ 系统架构
+## 项目概述
 
-### 整体架构
+QA-Full-Flow 是一个实验性 AI 测试知识库与用例生成系统
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         客户端层                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │   Web UI     │  │   API Client │  │  CLI Tools   │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-└─────────┼─────────────────┼─────────────────┼──────────────────┘
-          │                 │                 │
-          ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      API 层 (FastAPI)                            │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐  │
-│  │  Health    │  │ Knowledge  │  │ TestCases  │  │ Prompts  │  │
-│  │  Router    │  │  Router    │  │  Router    │  │ Manager  │  │
-│  └────────────┘  └────────────┘  └────────────┘  └──────────┘  │
-│                         依赖注入层                                │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-          ┌──────────────────┼──────────────────┐
-          ▼                  ▼                  ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│   Agent 层       │ │  Retrieval 层   │ │ Data Pipeline   │
-│                 │ │                 │ │                 │
-│ • Phase1 分析   │ │ • 向量检索      │ │ • 数据加载器    │
-│ • Phase2 生成   │ │ • BM25 检索     │ │ • 文档切分      │
-│ • Phase3 自审   │ │ • 混合检索      │ │ • 向量化        │
-│ • Phase4 交付   │ │ • Reranker      │ │ • 增量更新      │
-└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
-         │                   │                   │
-         └───────────────────┼───────────────────┘
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      基础设施层                                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │  Embedding   │  │ Vector Store │  │  LLM Service │          │
-│  │  (BGE-M3)    │  │  (ChromaDB)  │  │  (OpenAI)    │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-└─────────────────────────────────────────────────────────────────┘
-```
+### 核心能力
 
-### 核心设计原则
-
-1. **分层架构** - API → Agent/Retrieval/Pipeline → Infrastructure，职责清晰
-2. **依赖注入** - 服务实例按需创建，无全局变量，便于测试
-3. **Prompt 可配置化** - YAML 模板管理，在线调整无需重启
-4. **防幻觉机制** - 结构化提取、Token 预算、可追溯验证
-5. **类型安全** - Pydantic Settings + 完整类型注解
+| 能力 | 说明 |
+|------|------|
+| **知识管理** | 对接 JIRA/Confluence/JSONL，构建结构化向量知识库 |
+| **语义检索** | 三路召回（向量+BM25+元数据），RRF 融合，Cross-Encoder 重排序 |
+| **用例生成** | 四阶段 Agent 工作流（需求分析→用例设计→自审→交付），防幻觉机制保障 |
+| **Prompt 管理** | YAML 可配置模板，支持热重载、版本管理 |
 
 ---
 
-## 📁 项目结构
+## 架构设计
+
+### 整体分层
 
 ```
-qa-full-flow/
-├── src/qa_full_flow/           # 主源码包
-│   ├── agent/                  # AI Agent 层
-│   │   ├── prompts/            # Prompt 模板
-│   │   │   └── templates/      # YAML 可配置模板
-│   │   ├── llm_service.py      # LLM 服务（重试+JSON mode）
-│   │   ├── json_parser.py      # JSON 容错解析器
-│   │   ├── prompt_manager.py   # Prompt 管理器（热重载）
-│   │   ├── document_structurer.py  # 文档结构化+Token预算
-│   │   ├── semantic_matcher.py     # 语义匹配（覆盖率分析）
-│   │   ├── traceability_verifier.py # 可追溯性验证
-│   │   ├── test_phase1_analyzer.py  # 阶段1：需求分析
-│   │   ├── test_phase2_generator.py # 阶段2：用例生成
-│   │   ├── test_phase3_reviewer.py  # 阶段3：自审
-│   │   └── test_session.py     # 会话管理器（状态机）
-│   │
-│   ├── api/                    # FastAPI 应用层
-│   │   ├── routes/             # 路由模块
-│   │   │   ├── health.py       # 健康检查
-│   │   │   ├── knowledge.py    # 知识库管理
-│   │   │   ├── testcases.py    # 测试用例
-│   │   │   └── prompt_management.py  # Prompt 管理
-│   │   ├── middleware/         # 中间件
-│   │   ├── dependencies.py     # 依赖注入
-│   │   ├── schemas.py          # Pydantic 数据模型
-│   │   └── app.py              # 应用工厂
-│   │
-│   ├── core/                   # 核心模块
-│   │   ├── config.py           # 配置管理（pydantic-settings）
-│   │   ├── logging.py          # 日志系统（轮转+JSON）
-│   │   └── exceptions.py       # 异常定义
-│   │
-│   ├── data_pipeline/          # 数据处理层
-│   │   ├── loaders/            # 数据加载器
-│   │   │   ├── jira_loader.py
-│   │   │   ├── confluence_loader.py
-│   │   │   └── jsonl_loader.py
-│   │   ├── chunker.py          # 文档切分器
-│   │   └── pipeline.py         # 数据管道
-│   │
-│   ├── retrieval/              # 检索层
-│   │   ├── retriever.py        # 统一检索入口
-│   │   ├── hybrid.py           # 混合检索（三路召回）
-│   │   ├── bm25.py             # BM25 关键词检索
-│   │   └── reranker.py         # Cross-Encoder 重排序
-│   │
-│   ├── embedding/              # 向量嵌入层
-│   │   └── embedder.py         # SentenceTransformer
-│   │
-│   └── vector_store/           # 向量存储层
-│       └── chroma_store.py     # ChromaDB 封装
-│
-├── configs/                    # 配置文件
-├── data/                       # 数据目录（运行时生成）
-│   ├── vector_db/              # 向量数据库
-│   └── logs/                   # 日志文件
-│
-├── tests/                      # 测试代码
-├── docs/                       # 文档
-│   └── prompt_management.md    # Prompt 管理使用指南
-│
-├── Dockerfile                  # Docker 镜像
-├── docker-compose.yml          # Docker Compose
-├── pyproject.toml              # 项目配置（uv）
-├── .env.example                # 环境变量模板
-└── .gitignore                  # Git 忽略规则
+客户端层 (Web UI / API Client / CLI)
+    │
+    ▼
+┌─────────────────────────────────────────────┐
+│  API 层 (FastAPI)                            │
+│  • 路由：Health / Knowledge / TestCases      │
+│  • 中间件：日志 / 异常处理                    │
+│  • 依赖注入：服务实例按需创建                 │
+└──────────────────┬──────────────────────────┘
+                   │
+    ┌──────────────┼──────────────┐
+    ▼              ▼              ▼
+┌─────────┐  ┌──────────┐  ┌──────────┐
+│ Agent 层 │  │Retrieval │  │ Pipeline │
+│ 需求分析 │  │ 向量路   │  │ 数据加载 │
+│ 用例设计 │  │ BM25 路  │  │ 文档切分 │
+│ 用例自审 │  │ 元数据路 │  │ 向量化   │
+│ 用例交付 │  │ RRF 融合 │  │ 增量更新 │
+└────┬────┘  └────┬─────┘  └────┬─────┘
+     │            │             │
+     └────────────┼─────────────┘
+                  ▼
+┌─────────────────────────────────────────────┐
+│  基础设施层                                   │
+│  Embedding (BGE-M3) / ChromaDB / LLM API    │
+└─────────────────────────────────────────────┘
+```
+
+### 设计原则
+
+- **分层架构** - API → Agent/Retrieval/Pipeline → Infrastructure，职责清晰
+- **依赖注入** - 服务实例通过 `@lru_cache` 缓存复用，避免全局变量污染
+- **Prompt 可配置化** - YAML 模板管理，在线调整无需重启
+- **防幻觉机制** - 结构化提取、Token 预算、可追溯验证、JSON mode 强制输出
+- **类型安全** - Pydantic Settings + 完整类型注解
+
+---
+
+## 知识库构建
+
+### 数据源
+
+| 数据源 | 连接器 | 数据类型 | 增量更新 |
+|--------|--------|---------|---------|
+| **JIRA** | `JiraLoader` | Bug / Task / Story | 基于 `updated` 时间戳 |
+| **Confluence** | `ConfluenceLoader` | PRD / 技术文档 / 测试用例 | 基于 `version.updatedAt` |
+| **JSONL** | `JSONLLoader` | 本地结构化数据 | 基于 `doc_id` 去重 |
+
+### 入库流程
+
+```
+数据源 → Loader.load() → List[Dict{doc_id, content, source_type, module, tags, metadata}]
+    ↓
+DataPipeline.ingest()
+    ├─ 去重判断 (skip / incremental / force 三种模式)
+    ├─ 文档切分 (RecursiveCharacterSplitter，支持 Markdown 标题/段落/句子多级切分)
+    ├─ 向量化 (Embedder.encode → BAAI/bge-m3)
+    ├─ 构建元数据 (tags 转逗号分隔，提取 priority/version/author/last_updated/synced_at)
+    └─ 写入向量库 (ChromaStore.upsert → ChromaDB PersistentClient)
+    ↓
+BM25 索引重建 (JSON 格式持久化，避免 pickle 安全风险)
+```
+
+### 关键词自动提取
+
+入库时自动使用 `jieba.analyse.extract_tags()` (TF-IDF) 提取关键词作为 `tags`，提升后续检索的召回率：
+
+```python
+# 自动提取 10 个关键词
+tags = jieba.analyse.extract_tags(content, topK=10)
 ```
 
 ---
 
-## 🚀 快速开始
+## 检索系统
 
-### 前置要求
+### 三路召回架构
+
+```
+用户查询
+    │
+    ├─ [第 1 路] 向量语义检索
+    │   query → Embedder.encode_single() → ChromaDB 余弦相似度匹配
+    │   分词：不分词，直接传入 Embedding 模型
+    │
+    ├─ [第 2 路] BM25 关键词检索
+    │   query → jieba.cut_for_search() → BM25Okapi 打分
+    │   分词：jieba 搜索引擎模式
+    │
+    └─ [第 3 路] 元数据匹配
+        query → jieba.cut_for_search() → 匹配 module/tags 字段
+        权重：模块精确匹配 20 分 / 包含匹配 10 分 / 标签精确匹配 5 分
+            ↓
+    RRF 融合 (k=60)
+    公式：RRF(d) = Σ weight / (60 + rank(d))
+    权重：向量路 1.0 / BM25 路 1.0 / 元数据路 1.5
+            ↓
+    Cross-Encoder 重排序 (可选，BAAI/bge-reranker-large)
+            ↓
+    Top-N 结果
+```
+
+### 检索配置
+
+检索支持为每路配置独立的 query，实现最优匹配：
+
+```python
+retriever.search(
+    query=vector_query,           # 向量路：完整语义
+    bm25_query=bm25_query,        # BM25 路：精准关键词
+    metadata_query=bm25_query,    # 元数据路：精准关键词
+    n_results=5,
+    filters={"module": "订单支付"}
+)
+```
+
+### BM25 索引持久化
+
+BM25 索引以 JSON 格式持久化到 `data/vector_db/bm25_index.json`，避免 pickle 反序列化安全风险。系统启动时自动加载，入库完成后自动重建。
+
+---
+
+## Agent 编排
+
+### 四阶段工作流
+
+```
+创建会话 → Phase1 需求分析 → 用户确认 → Phase2 用例设计 → 用户确认
+    ↓
+Phase3 用例自审 → 用户确认 → Phase4 交付
+```
+
+### 阶段详解
+
+| 阶段 | 职责 | 输入 | 输出 | 防幻觉机制 |
+|------|------|------|------|-----------|
+| **Phase1** | 需求分析与测试点提取 | PRD/技术文档/补充文档 | 测试点分析文档 | Token 预算控制、结构化提取 |
+| **Phase2** | 测试用例设计生成 | Phase1 提取的结构化功能点 | JSON 格式测试用例 | JSON mode 强制输出、禁止跨模块 |
+| **Phase3** | 测试用例自审 | 测试用例 + Phase1 分析结果 | 自审报告（覆盖率/可追溯率/问题清单） | 语义覆盖率分析、可追溯性验证 |
+| **Phase4** | 测试用例交付 | 分析文档 + 测试用例 + 自审报告 | Markdown 报告 + JSON 用例 | 质量检查、交付清单 |
+
+### 人工介入 (Human-in-the-Loop)
+
+每个阶段完成后暂停，等待用户审核。用户可：
+- **确认通过** → 推进状态，可进入下一阶段
+- **驳回反馈** → 记录反馈，自动重新执行当前阶段（LLM 会根据反馈调整输出）
+
+### 多轮知识库检索
+
+Phase1 执行时自动进行多轮 RAG 检索：
+
+```
+PRD 文档
+    ↓
+preprocess_documents() → 提取核心内容
+    ↓
+第一轮：jieba 提取核心内容关键词 → 检索知识库
+第二轮：核心内容完整语义 → 检索知识库
+    ↓
+合并去重 → Top 5 参考知识 → 传入 Prompt
+```
+
+---
+
+## Prompt 管理
+
+### 模板配置
+
+Prompt 模板以 YAML 格式存储在 `src/qa_full_flow/agent/prompts/templates/` 目录：
+
+```yaml
+- name: phase2_user_prompt
+  version: v3
+  content: |
+    请基于以下结构化功能点生成测试用例：
+    ## 所属模块
+    {module}
+    
+    ## 结构化功能点
+    {function_points}
+  variables:
+    - module
+    - function_points
+```
+
+### 特性
+
+- **热重载** - 修改 YAML 文件后自动检测更新，无需重启服务
+- **版本管理** - 多版本共存，可通过 `version` 参数指定
+- **在线查询** - 通过 `GET /api/v1/prompts/list` 查看所有模板
+
+---
+
+## 快速开始
+
+### 环境要求
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) 包管理器（或 pip）
@@ -182,7 +258,7 @@ curl http://localhost:8000/health
 
 ---
 
-## 📡 API 文档
+## API 文档
 
 服务启动后访问：
 - **Swagger UI**: http://localhost:8000/docs
@@ -194,63 +270,49 @@ curl http://localhost:8000/health
 |------|------|------|
 | GET | `/health` | 健康检查 |
 | POST | `/api/v1/knowledge/search` | 知识库检索 |
-| POST | `/api/v1/knowledge/ingest` | 数据入库 |
-| POST | `/api/v1/knowledge/sync` | 知识库同步 |
-| POST | `/api/v1/testcase/generate` | AI 生成用例（旧版） |
+| POST | `/api/v1/knowledge/ingest` | 数据入库（支持 skip/incremental/force 模式） |
 | POST | `/api/v1/testcase/session/create` | 创建用例会话 |
-| POST | `/api/v1/testcase/session/{id}/phase1` | 阶段1：需求分析 |
-| POST | `/api/v1/testcase/session/{id}/phase2` | 阶段2：用例设计 |
-| POST | `/api/v1/testcase/session/{id}/phase3` | 阶段3：自审 |
-| POST | `/api/v1/testcase/session/{id}/phase4` | 阶段4：交付 |
+| POST | `/api/v1/testcase/session/{id}/phase1` | 阶段 1：需求分析 |
+| POST | `/api/v1/testcase/session/{id}/confirm` | 确认阶段结果（驳回自动重新执行） |
+| POST | `/api/v1/testcase/session/{id}/phase2` | 阶段 2：用例设计 |
+| POST | `/api/v1/testcase/session/{id}/phase3` | 阶段 3：用例自审 |
+| POST | `/api/v1/testcase/session/{id}/phase4` | 阶段 4：交付 |
 | GET | `/api/v1/prompts/list` | 列出 Prompt 模板 |
 | POST | `/api/v1/prompts/reload` | 重载 Prompt 模板 |
 
 ---
 
-## ⚙️ 配置说明
+## 配置说明
 
 ### 环境变量
 
 所有配置通过 `.env` 文件管理，参考 `.env.example`：
 
-```env
-# LLM 配置
-LLM_API_KEY=sk-xxx
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-3.5-turbo
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `LLM_API_KEY` | LLM API 密钥 | - |
+| `LLM_BASE_URL` | LLM API 基础 URL | `https://api.openai.com/v1` |
+| `LLM_MODEL` | LLM 模型名称 | `gpt-3.5-turbo` |
+| `EMBEDDING_MODEL` | Embedding 模型 | `BAAI/bge-m3` |
+| `CHROMA_PATH` | ChromaDB 存储路径 | `./data/vector_db/chroma_kb` |
+| `SYNC_INTERVAL_HOURS` | 定时同步间隔（小时） | `6` |
+| `ALLOW_PICKLE_LOADING` | 允许加载旧格式 BM25 索引 | `false` |
 
-# 向量数据库
-EMBEDDING_MODEL=BAAI/bge-m3
-CHROMA_PATH=./data/vector_db/chroma_kb
+### 定时同步
 
-# Confluence（可选）
-CONFLUENCE_URL=https://your-company.atlassian.net/wiki
-CONFLUENCE_EMAIL=your-email@company.com
-CONFLUENCE_API_TOKEN=your-token
+```bash
+# 仅启动定时同步（不启动 API）
+uv run python sync_scheduler.py --interval 6
 
-# JIRA（可选）
-JIRA_URL=https://your-company.atlassian.net
-JIRA_EMAIL=your-email@company.com
-JIRA_API_TOKEN=your-token
+# 启动 API + 定时同步
+uv run python start_all.py --sync-interval 6
 ```
-
-### Prompt 模板
-
-Prompt 模板位于 `src/qa_full_flow/agent/prompts/templates/`，支持：
-- YAML/JSON 格式
-- 版本管理（多版本共存）
-- 热重载（修改后自动生效）
-- 通过 API 在线查询
-
-详见 [Prompt 管理文档](docs/prompt_management.md)。
 
 ---
 
-## 🔧 开发指南
+## 开发指南
 
 ### 代码规范
-
-项目使用以下工具保证代码质量：
 
 ```bash
 # 代码格式化
@@ -278,85 +340,25 @@ pre-commit run --all-files
 
 ### 添加新功能
 
-1. **新增 API 端点** - 在 `src/qa_full_flow/api/routes/` 创建路由文件，注册到 `app.py`
-2. **新增数据源** - 继承 `BaseLoader`，实现 `load()` 方法
-3. **自定义 Prompt** - 在 `templates/` 目录添加 YAML 文件
-4. **扩展 Agent** - 实现新的 Phase 或修改现有 Prompt
+| 功能 | 操作 |
+|------|------|
+| **新增 API 端点** | 在 `src/qa_full_flow/api/routes/` 创建路由文件，注册到 `app.py` |
+| **新增数据源** | 继承 `BaseLoader`，实现 `load()` 方法 |
+| **自定义 Prompt** | 在 `templates/` 目录添加 YAML 文件 |
+| **扩展 Agent** | 实现新的 Phase 或修改现有 Prompt |
 
 ---
 
-## 🏛️ 核心特性详解
-
-### 1. 三路召回检索系统
-
-```
-用户查询
-   ↓
-┌─────────────────────────────────┐
-│        混合检索 (Hybrid)         │
-├─────────┬──────────┬────────────┤
-│ 向量路  │ BM25 路  │ 元数据路   │
-│ 语义匹配│ 关键词    │ 精确匹配   │
-└─────────┴──────────┴────────────┘
-           ↓
-    RRF 融合 (k=60)
-           ↓
-   Cross-Encoder 重排序
-           ↓
-       Top-N 结果
-```
-
-### 2. 四阶段用例生成
-
-```
-Phase1: 需求分析 ──→ Phase2: 用例设计 ──→ Phase3: 自审 ──→ Phase4: 交付
-   ↓                   ↓                   ↓                  ↓
-• 结构化提取        • 基于功能点          • 语义覆盖率        • Markdown 报告
-• Token 预算        • 防跨模块            • 可追溯验证        • JSON 用例
-• 显式约束          • JSON mode           • 质量检查          • 交付清单
-```
-
-### 3. 防幻觉机制
-
-| 层级 | 机制 | 说明 |
-|------|------|------|
-| **输入层** | Token 预算控制 | 防止上下文溢出，每类文档有限额 |
-| **处理层** | 结构化提取 | 只传 Phase1 提取的功能点，不传原文 |
-| **生成层** | JSON mode + 显式约束 | 强制输出 JSON，标注未提及内容 |
-| **验证层** | 可追溯性验证 | 逐字段验证是否能在原文找到依据 |
-
-### 4. Prompt 可配置化
-
-```yaml
-# src/qa_full_flow/agent/prompts/templates/phase2_design.yaml
-- name: phase2_user_prompt
-  version: v3
-  content: |
-    请基于以下结构化功能点生成测试用例：
-    ## 所属模块
-    {module}
-    
-    ## 结构化功能点
-    {function_points}
-  variables:
-    - module
-    - function_points
-```
-
-修改 YAML 文件后，调用 `POST /api/v1/prompts/reload` 即可生效，**无需重启服务**。
-
----
-
-## 📊 技术栈
+## 技术栈
 
 | 组件 | 技术 | 版本 |
 |------|------|------|
 | **Web 框架** | FastAPI + Uvicorn | ≥0.115 |
 | **向量数据库** | ChromaDB | ≥1.5.5 |
-| **Embedding** | SentenceTransformer (BGE-M3) | ≥5.3.0 |
+| **Embedding** | SentenceTransformer (BAAI/bge-m3) | ≥5.3.0 |
 | **分词** | jieba | ≥0.42.1 |
 | **BM25** | rank-bm25 | ≥0.2.2 |
-| **重排序** | Cross-Encoder (BGE-Reranker) | - |
+| **重排序** | Cross-Encoder (BAAI/bge-reranker-large) | - |
 | **LLM** | OpenAI 兼容 API | ≥1.50.0 |
 | **配置** | pydantic-settings | ≥2.6.0 |
 | **包管理** | uv | - |
@@ -366,11 +368,10 @@ Phase1: 需求分析 ──→ Phase2: 用例设计 ──→ Phase3: 自审 ─
 
 ---
 
-## 🐛 故障排查
+## 故障排查
 
-### 常见问题
+### LLM 服务不可用
 
-**Q: LLM 服务不可用？**
 ```bash
 # 检查配置
 grep LLM .env
@@ -379,7 +380,8 @@ grep LLM .env
 curl -H "Authorization: Bearer $LLM_API_KEY" $LLM_BASE_URL/models
 ```
 
-**Q: 向量库初始化失败？**
+### 向量库初始化失败
+
 ```bash
 # 检查目录权限
 ls -la data/vector_db/
@@ -388,18 +390,21 @@ ls -la data/vector_db/
 rm -rf data/vector_db/chroma_kb
 ```
 
-**Q: Prompt 模板未生效？**
-```bash
-# 手动重载
-curl -X POST http://localhost:8000/api/v1/prompts/reload
+### BM25 检索未生效
 
-# 检查 YAML 格式
-python -c "import yaml; yaml.safe_load(open('path/to/template.yaml'))"
+```bash
+# 检查索引文件是否存在
+ls -la data/vector_db/bm25_index.json
+
+# 重建索引（通过 API）
+curl -X POST http://localhost:8000/api/v1/knowledge/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"source_path": "data/mock_test_kb/mock_test_data.jsonl", "update_mode": "force"}'
 ```
 
 ---
 
-## 🤝 贡献指南
+## 贡献指南
 
 1. Fork 本仓库
 2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
@@ -409,18 +414,12 @@ python -c "import yaml; yaml.safe_load(open('path/to/template.yaml'))"
 
 ---
 
-## 📄 License
+## License
 
 [MIT License](LICENSE)
 
 ---
 
-## 👥 作者
+## 作者
 
 **QA Team** - [shadow0202](https://github.com/shadow0202)
-
----
-
-## ⭐ Star History
-
-如果这个项目对你有帮助，请给个 Star！

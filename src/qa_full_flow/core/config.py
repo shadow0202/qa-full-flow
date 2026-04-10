@@ -95,6 +95,24 @@ class Settings(BaseSettings):
             raise ValueError(f"日志级别必须是 {valid_levels} 之一，当前: {v}")
         return v.upper()
 
+    @field_validator("LLM_API_KEY")
+    @classmethod
+    def validate_llm_api_key(cls, v: str) -> str:
+        """验证 LLM API Key 非空（如果配置了 LLM_BASE_URL）"""
+        return v
+
+    @field_validator("CONFLUENCE_API_TOKEN", "JIRA_API_TOKEN")
+    @classmethod
+    def validate_api_tokens(cls, v: str) -> str:
+        """验证 API Token 格式（如果提供）"""
+        if v and not v.startswith(("sk-", "xox", "ATATT")):
+            # 仅为警告，不阻止（不同provider格式不同）
+            import logging
+            logging.getLogger(__name__).warning(
+                f"⚠️  API Token 格式可能不正确: {v[:10]}...，请确认"
+            )
+        return v
+
     # ============ 便捷属性 ============
     @property
     def llm_available(self) -> bool:

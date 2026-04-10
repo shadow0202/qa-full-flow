@@ -1,10 +1,14 @@
 """阶段1: 需求分析与测试点提取"""
 import json
+import logging
+import jieba.analyse
 from typing import Dict, List, Optional
 from src.qa_full_flow.agent.llm_service import LLMService
 from src.qa_full_flow.retrieval.retriever import Retriever
 from src.qa_full_flow.agent.prompt_manager import get_prompt_manager
 from src.qa_full_flow.agent.document_structurer import preprocess_documents
+
+logger = logging.getLogger(__name__)
 
 
 class Phase1Analyzer:
@@ -15,6 +19,81 @@ class Phase1Analyzer:
         self.retriever = retriever
         self.prompt_manager = get_prompt_manager()
     
+    def _retrieve_knowledge_refs(
+        self,
+        prd_content: str,
+        module: str,
+        n_results: int = 5
+    ) -> List[Dict]:
+        """
+        多轮检索知识库参考知识
+
+        检索策略：
+        - 向量路：tag_query + core_content（合并，语义信息最完整）
+        - BM25 路：全文 top10 关键词（精准关键词匹配）
+        - 元数据路：同 BM25 的 top10 关键词（精准匹配 tags/module）
+
+        Args:
+            prd_content: PRD 文档内容
+            module: 模块名称
+            n_results: 期望返回的结果数
+
+        Returns:
+            检索结果列表
+        """
+        # 1. 先用现有的结构化预处理提取核心内容
+        preprocessed = preprocess_documents(
+            prd_content=prd_content,
+            module_name=module,
+        )
+        core_content = preprocessed["prd"]["content"]
+
+        # 2. 提取核心内容的关键词（前 3 个）
+        core_tags = jieba.analyse.extract_tags(core_content, topK=3)
+        tag_query = ' '.join(core_tags) if core_tags else ""
+
+        # 3. 提取全文的 top10 关键词（用于 BM25 和元数据路）
+        full_keywords = jieba.analyse.extract_tags(prd_content, topK=10)
+        bm25_query = ' '.join(full_keywords) if full_keywords else ""
+
+        # 4. 构建向量路 query：关键词 + 核心内容（语义信息最完整）
+        vector_query = f"{tag_query} {core_content}".strip()
+
+        # 5. 打印调试信息
+        logger.info(f"   📝 向量路 query: {vector_query[:100]}...")
+        logger.info(f"   📝 BM25/元数据路 query: {bm25_query}")
+
+        # 6. 调用检索（每路使用不同的 query）
+        results = self.retriever.search(
+            query=vector_query,           # 向量路用
+            bm25_query=bm25_query,        # BM25 路用
+            metadata_query=bm25_query,    # 元数据路用
+            n_results=n_results
+        )
+
+        logger.info(f"   📊 检索结果: {len(results)} 条")
+
+        return results[:n_results]
+
+    def _deduplicate_refs(self, refs: List[Dict]) -> List[Dict]:
+        """
+        按 doc_id 去重
+
+        Args:
+            refs: 检索结果列表
+
+        Returns:
+            去重后的结果列表
+        """
+        seen = set()
+        result = []
+        for ref in refs:
+            doc_id = ref.get('doc_id', '')
+            if doc_id not in seen:
+                seen.add(doc_id)
+                result.append(ref)
+        return result
+
     def analyze(
         self,
         prd_content: str,
@@ -24,15 +103,16 @@ class Phase1Analyzer:
         use_knowledge_base: bool = True,
         prd_url: str = "",
         tech_doc_urls: List[str] = None,
-        other_doc_urls: List[str] = None
+        other_doc_urls: List[str] = None,
+        feedback_history: List[Dict] = None
     ) -> Dict:
         """执行阶段1分析"""
-        print("\n" + "="*60)
-        print("📋 阶段1：需求分析与测试点提取")
-        print("="*60)
+        logger.info("\n" + "="*60)
+        logger.info("📋 阶段1：需求分析与测试点提取")
+        logger.info("="*60)
 
         # 0. 文档结构化预处理（新增：控制 token 预算）
-        print("\n📐 文档结构化预处理...")
+        logger.info("\n📐 文档结构化预处理...")
         preprocessed = preprocess_documents(
             prd_content=prd_content,
             module_name=module,
@@ -46,22 +126,23 @@ class Phase1Analyzer:
         other_processed = [d["content"] for d in preprocessed["other_docs"]]
         constraints = preprocessed["constraints"]
 
-        print(f"✅ PRD 结构化完成: {prd_structured['budget_used']} tokens 使用")
+        logger.info(f"✅ PRD 结构化完成: {prd_structured['budget_used']} tokens 使用")
         if preprocessed["any_truncated"]:
-            print(f"⚠️  部分内容已截断以符合 token 预算")
+            logger.info(f"⚠️  部分内容已截断以符合 token 预算")
 
-        # 1. 可选：检索知识库获取历史相似用例
+        # 1. 可选：检索知识库获取历史相似用例（多轮检索）
         knowledge_refs = []
         if use_knowledge_base and self.retriever:
-            print("\n🔍 检索知识库...")
-            knowledge_refs = self.retriever.search(
-                query=prd_content[:300],
-                n_results=3
+            logger.info("\n🔍 多轮检索知识库...")
+            knowledge_refs = self._retrieve_knowledge_refs(
+                prd_content=prd_content,
+                module=module,
+                n_results=5
             )
-            print(f"✅ 找到 {len(knowledge_refs)} 条参考知识")
+            logger.info(f"✅ 找到 {len(knowledge_refs)} 条参考知识")
 
         # 2. 构建分析Prompt
-        print("\n🤖 调用LLM进行需求分析...")
+        logger.info("\n🤖 调用LLM进行需求分析...")
         analysis_result = self._call_llm(
             prd_structured=prd_structured,
             tech_doc_contents=tech_processed,
@@ -71,11 +152,12 @@ class Phase1Analyzer:
             constraints=constraints,
             prd_url=prd_url,
             tech_doc_urls=tech_doc_urls or [],
-            other_doc_urls=other_doc_urls or []
+            other_doc_urls=other_doc_urls or [],
+            feedback_history=feedback_history or []
         )
         
         # 3. 解析分析结果
-        print("\n📝 解析分析结果...")
+        logger.info("\n📝 解析分析结果...")
         analysis_doc = self._format_analysis_doc(
             analysis_result,
             module=module,
@@ -88,9 +170,9 @@ class Phase1Analyzer:
         function_points_count = self._count_function_points(analysis_result)
         pending_confirmations = self._count_pending_confirmations(analysis_result)
         
-        print(f"\n✅ 阶段1分析完成")
-        print(f"   功能点数量: {function_points_count}")
-        print(f"   待确认项: {pending_confirmations}")
+        logger.info(f"\n✅ 阶段1分析完成")
+        logger.info(f"   功能点数量: {function_points_count}")
+        logger.info(f"   待确认项: {pending_confirmations}")
         
         return {
             "analysis_doc": analysis_doc,
@@ -111,7 +193,8 @@ class Phase1Analyzer:
         constraints: Dict,
         prd_url: str,
         tech_doc_urls: List[str],
-        other_doc_urls: List[str]
+        other_doc_urls: List[str],
+        feedback_history: List[Dict]
     ) -> Dict:
         """调用LLM进行分析"""
 
@@ -144,6 +227,20 @@ class Phase1Analyzer:
         if constraint_text:
             constraint_text = f"\n\n## ⚠️ 重要约束\n{constraint_text}"
 
+        # 添加用户反馈历史（如果存在）
+        feedback_text = ""
+        if feedback_history:
+            feedback_items = []
+            for i, fb in enumerate(feedback_history, 1):
+                feedback_items.append(
+                    f"{i}. **{fb.get('phase', '未知阶段')}**: {fb.get('feedback', '')}"
+                )
+            feedback_text = (
+                f"\n\n## 📝 用户反馈历史（请根据以下反馈调整本次输出）\n"
+                + "\n".join(feedback_items)
+                + "\n\n**重要**: 请认真分析以上反馈，针对性地改进输出质量。"
+            )
+
         # 使用 PromptManager 渲染模板（支持从文件加载）
         system_prompt = self.prompt_manager.render(
             "phase1_system_prompt",
@@ -161,7 +258,7 @@ class Phase1Analyzer:
             prd_url=prd_url,
             tech_doc_urls=", ".join(tech_doc_urls) if tech_doc_urls else "无",
             other_doc_urls=", ".join(other_doc_urls) if other_doc_urls else "无"
-        ) + constraint_text
+        ) + constraint_text + feedback_text
 
         response = self.llm.generate(
             system_prompt=system_prompt,

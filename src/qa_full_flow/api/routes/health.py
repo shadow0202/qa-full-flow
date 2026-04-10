@@ -1,5 +1,6 @@
 """健康检查路由"""
 from fastapi import APIRouter
+from src.qa_full_flow.core.config import settings
 
 router = APIRouter()
 
@@ -9,6 +10,6 @@ async def health_check():
     """健康检查端点"""
     return {
         "status": "healthy",
-        "service": "AI测试用例与知识库系统",
-        "version": "0.2.0"
+        "service": settings.APP_NAME,
+        "version": settings.APP_VERSION
     }

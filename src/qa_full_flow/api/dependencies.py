@@ -1,6 +1,7 @@
 """依赖注入
 
 提供FastAPI依赖注入函数，替代全局变量。
+使用 lru_cache 实现实例缓存，避免重复创建。
 """
 from functools import lru_cache
 from typing import Optional
@@ -25,31 +26,35 @@ def get_session_manager():
     return session_manager
 
 
+@lru_cache(maxsize=2)
 def get_embedder():
-    """获取Embedding服务"""
+    """获取Embedding服务（实例缓存）"""
     from src.qa_full_flow.embedding.embedder import Embedder
     return Embedder()
 
 
+@lru_cache(maxsize=2)
 def get_vector_store():
-    """获取向量存储"""
+    """获取向量存储（实例缓存）"""
     from src.qa_full_flow.vector_store.chroma_store import ChromaStore
     return ChromaStore()
 
 
+@lru_cache(maxsize=2)
 def get_retriever():
-    """获取检索器"""
+    """获取检索器（实例缓存）"""
     from src.qa_full_flow.retrieval.retriever import Retriever
-    
+
     embedder = get_embedder()
     vector_store = get_vector_store()
     return Retriever(embedder, vector_store)
 
 
+@lru_cache(maxsize=2)
 def get_pipeline():
-    """获取数据管道"""
+    """获取数据管道（实例缓存）"""
     from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
-    
+
     embedder = get_embedder()
     vector_store = get_vector_store()
     return DataPipeline(embedder, vector_store)
@@ -63,7 +68,7 @@ def get_llm_service():
 
 def get_test_agent():
     """获取测试Agent
-    
+
     注意：TestAgent 类当前未实现，此依赖项暂不可用。
     如需使用旧版 API (/testcase/generate)，请先实现 TestAgent 类。
     """

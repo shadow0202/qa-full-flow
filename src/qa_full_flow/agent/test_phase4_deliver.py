@@ -1,7 +1,10 @@
 """阶段4: 测试用例交付"""
 import json
+import logging
 from datetime import datetime
 from typing import Dict, List
+
+logger = logging.getLogger(__name__)
 
 
 class Phase4Deliverer:
@@ -31,37 +34,37 @@ class Phase4Deliverer:
         Returns:
             交付结果
         """
-        print("\n" + "="*60)
-        print("📦 阶段4：测试用例交付")
-        print("="*60)
-        
+        logger.info("\n" + "="*60)
+        logger.info("📦 阶段4：测试用例交付")
+        logger.info("="*60)
+
         # 1. 整理交付物
-        print("\n📁 整理交付物...")
+        logger.info("\n📁 整理交付物...")
         deliverables = self._organize_deliverables(
             module=module,
             analysis_doc=analysis_doc,
             test_cases=test_cases,
             review_report=review_report
         )
-        
+
         # 2. 生成交付清单
-        print("\n📝 生成交付清单...")
+        logger.info("\n📝 生成交付清单...")
         delivery_list = self._generate_delivery_list(
             module=module,
             test_cases=test_cases,
             statistics=statistics
         )
-        
+
         # 3. 统计汇总
         summary = self._calculate_summary(
             module=module,
             test_cases=test_cases,
             statistics=statistics
         )
-        
-        print(f"\n✅ 阶段4交付完成")
-        print(f"   交付物: {len(deliverables)} 个文件")
-        print(f"   用例总数: {summary['total_cases']}")
+
+        logger.info(f"\n✅ 阶段4交付完成")
+        logger.info(f"   交付物: {len(deliverables)} 个文件")
+        logger.info(f"   用例总数: {summary['total_cases']}")
         
         return {
             "deliverables": deliverables,

@@ -1,8 +1,12 @@
 """JSONL格式数据加载器"""
 import json
+import logging
 from pathlib import Path
 from typing import List, Dict
+import jieba.analyse
 from src.qa_full_flow.data_pipeline.loaders.base import BaseLoader
+
+logger = logging.getLogger(__name__)
 
 
 class JSONLLoader(BaseLoader):
@@ -34,9 +38,9 @@ class JSONLLoader(BaseLoader):
                     doc = self._parse_item(item)
                     documents.append(doc)
                 except json.JSONDecodeError as e:
-                    print(f"⚠️  跳过第{line_num}行（JSON解析失败）: {e}")
-        
-        print(f"✅ JSONL加载完成: {len(documents)} 条文档")
+                    logger.warning(f"跳过第{line_num}行（JSON解析失败）: {e}")
+
+        logger.info(f"JSONL加载完成: {len(documents)} 条文档")
         return documents
     
     def _parse_item(self, item: Dict) -> Dict:
@@ -47,11 +51,38 @@ class JSONLLoader(BaseLoader):
             from datetime import datetime
             metadata["last_updated"] = datetime.now().isoformat()
 
+        # 获取原始 tags
+        tags = item.get("tags", [])
+        content = item.get("content", "")
+
+        # 如果 tags 为空，自动提取关键词
+        if not tags and content:
+            tags = self._extract_keywords(content, top_k=10)
+
         return {
             "doc_id": item.get("doc_id", ""),
-            "content": item.get("content", ""),
+            "content": content,
             "source_type": item.get("source_type", "unknown"),
             "module": item.get("module", "unknown"),
-            "tags": item.get("tags", []),
+            "tags": tags,
             "metadata": metadata
         }
+
+    def _extract_keywords(self, content: str, top_k: int = 10) -> List[str]:
+        """
+        从文档内容中提取关键词（使用 TF-IDF 算法）
+
+        Args:
+            content: 文档内容
+            top_k: 提取关键词数量
+
+        Returns:
+            关键词列表
+        """
+        try:
+            # 使用 jieba 的 TF-IDF 算法提取关键词
+            keywords = jieba.analyse.extract_tags(content, topK=top_k, withWeight=False)
+            return keywords
+        except Exception as e:
+            logger.warning(f"关键词提取失败: {e}")
+            return []

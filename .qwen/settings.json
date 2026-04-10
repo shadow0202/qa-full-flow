@@ -34,7 +34,8 @@
       "Bash(true)",
       "Bash(git checkout *)",
       "Bash(powershell *)",
-      "Bash(wc *)"
+      "Bash(wc *)",
+      "Bash(git config *)"
     ]
   },
   "$version": 3
