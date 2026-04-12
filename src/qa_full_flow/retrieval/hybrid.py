@@ -27,6 +27,9 @@ class HybridRetriever:
     使用 RRF (Reciprocal Rank Fusion) 融合多路结果
     """
 
+    # 元数据匹配权重（高于向量和BM25，因为模块/标签精确匹配相关性更强）
+    METADATA_SEARCH_WEIGHT = 1.5
+
     def __init__(self, embedder: Embedder, vector_store: ChromaStore,
                  index_path: Optional[str] = None):
         """
@@ -62,6 +65,10 @@ class HybridRetriever:
         self._metadata_module_index: Dict[str, List[int]] = {}
         self._metadata_tag_index: Dict[str, List[int]] = {}
         self._metadata_indexed = False
+        
+        # 索引一致性追踪
+        self._last_vector_store_count = 0
+        self._index_dirty = False
 
     def build_bm25_index(self, documents: List[Dict]):
         """
@@ -78,6 +85,12 @@ class HybridRetriever:
         # 分词并构建索引
         tokenized_docs = [list(jieba.cut_for_search(doc)) for doc in self.bm25_documents]
         self.bm25 = BM25Okapi(tokenized_docs)
+        
+        # 重置元数据索引标记
+        self._metadata_indexed = False
+        self._index_dirty = False
+        self._last_vector_store_count = len(documents)
+        
         logger.info("BM25 索引构建完成")
 
     def save_bm25_index(self) -> bool:
@@ -210,6 +223,12 @@ class HybridRetriever:
         Returns:
             融合后的检索结果
         """
+        # 检查索引一致性，如果向量库文档数量变化则标记为脏
+        current_count = self.vector_store.count()
+        if current_count != self._last_vector_store_count:
+            self._index_dirty = True
+            self._metadata_indexed = False
+        
         # 如果不传专用 query，默认使用主 query
         actual_bm25_query = bm25_query or query
         actual_metadata_query = metadata_query or query
@@ -229,11 +248,19 @@ class HybridRetriever:
         # 第3路：元数据匹配
         if enable_metadata:
             metadata_results = self._metadata_search(actual_metadata_query, top_k_for_rerank, filters)
-            self._merge_results(all_results, metadata_results, weight=1.5)  # 元数据匹配权重更高
+            self._merge_results(all_results, metadata_results, weight=self.METADATA_SEARCH_WEIGHT)
 
         # 转换为列表并排序
         results = list(all_results.values())
         results.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        
+        # 记录检索统计
+        if results:
+            sources_count = {}
+            for r in results[:n_results]:
+                for s in r.get("sources", []):
+                    sources_count[s] = sources_count.get(s, 0) + 1
+            logger.debug(f"检索返回 {min(len(results), n_results)} 条结果，来源分布: {sources_count}")
 
         return results[:n_results]
 
@@ -274,29 +301,42 @@ class HybridRetriever:
 
     def _bm25_search(self, query: str, n_results: int,
                      filters: Optional[Dict] = None) -> List[Dict]:
-        """BM25 关键词检索"""
+        """BM25 关键词检索（优化：先粗排取 Top-K，再计算精确分数）"""
         if not self.bm25:
             return []
 
         query_tokens = list(jieba.cut_for_search(query))
-        scores = self.bm25.get_scores(query_tokens)
-
+        
+        # 优化：先获取所有分数，但只保留 Top-K 候选
+        # 避免对全量文档进行过滤和排序
+        all_scores = self.bm25.get_scores(query_tokens)
+        
+        # 获取 Top-K 候选（K = n_results * 3，给过滤留出余量）
+        top_k_candidates = min(len(all_scores), n_results * 3)
+        top_indices = sorted(range(len(all_scores)), key=lambda i: all_scores[i], reverse=True)[:top_k_candidates]
+        
         results = []
-        for i, score in enumerate(scores):
-            results.append({
+        for i in top_indices:
+            score = all_scores[i]
+            if score <= 0:
+                continue
+                
+            result = {
                 "doc_id": self.bm25_doc_ids[i],
                 "content": self.bm25_documents[i],
                 "metadata": self.bm25_metadatas[i],
                 "bm25_score": float(score),
-                "rank": i,
+                "rank": len(results),
                 "source": "bm25"
-            })
+            }
+            results.append(result)
 
-        results.sort(key=lambda x: x["bm25_score"], reverse=True)
-
+        # 应用过滤条件
         if filters:
             results = self._apply_filters(results, filters)
 
+        # 按分数重新排序并返回 Top-N
+        results.sort(key=lambda x: x["bm25_score"], reverse=True)
         return results[:n_results]
 
     def _build_metadata_index(self, all_docs: Dict) -> None:
@@ -365,6 +405,21 @@ class HybridRetriever:
         for token in query_tokens:
             if token in self._metadata_tag_index:
                 candidate_indices.update(self._metadata_tag_index[token])
+        
+        # 通过 source_type 过滤（如果 filters 中有）
+        if filters and "source_type" in filters:
+            source_type_filter = filters["source_type"].lower()
+            source_type_indices = set()
+            for i, metadata in enumerate(all_docs.get("metadatas", [])):
+                if metadata.get("source_type", "").lower() == source_type_filter:
+                    source_type_indices.add(i)
+            
+            # 如果有 source_type 过滤，取交集
+            if source_type_indices:
+                if candidate_indices:
+                    candidate_indices &= source_type_indices
+                else:
+                    candidate_indices = source_type_indices
 
         # 如果没有候选文档，返回空
         if not candidate_indices:
@@ -407,6 +462,19 @@ class HybridRetriever:
                         score += 2.0
 
             if score > 0:
+                # 应用其他过滤条件（除了 source_type 已处理）
+                if filters:
+                    match = True
+                    for key, value in filters.items():
+                        if key == "source_type":
+                            continue  # 已处理
+                        metadata_value = metadata.get(key)
+                        if metadata_value != value:
+                            match = False
+                            break
+                    if not match:
+                        continue
+                
                 results.append({
                     "doc_id": doc_id,
                     "content": doc,

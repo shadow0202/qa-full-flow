@@ -54,10 +54,18 @@ def get_retriever():
 def get_pipeline():
     """获取数据管道（实例缓存）"""
     from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
+    from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
 
     embedder = get_embedder()
     vector_store = get_vector_store()
-    return DataPipeline(embedder, vector_store)
+    
+    # 初始化文档切分器
+    chunker = RecursiveCharacterSplitter(
+        chunk_size=800,
+        chunk_overlap=100
+    )
+    
+    return DataPipeline(embedder, vector_store, chunker=chunker)
 
 
 def get_llm_service():
@@ -80,19 +88,21 @@ def get_test_agent():
     )
 
 
-def get_confluence_loader():
-    """获取Confluence加载器"""
+@lru_cache(maxsize=1)
+def get_tapd_loader():
+    """获取TAPD加载器"""
     try:
-        from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
+        from src.qa_full_flow.data_pipeline.loaders.tapd_loader import TapdLoader
         from src.qa_full_flow.core.config import settings
 
-        if settings.CONFLUENCE_URL and settings.CONFLUENCE_EMAIL and settings.CONFLUENCE_API_TOKEN:
-            return ConfluenceLoader(
-                url=settings.CONFLUENCE_URL,
-                email=settings.CONFLUENCE_EMAIL,
-                api_token=settings.CONFLUENCE_API_TOKEN,
+        if settings.TAPD_API_USER and settings.TAPD_API_PASSWORD and settings.TAPD_WORKSPACE_ID:
+            return TapdLoader(
+                workspace_id=settings.TAPD_WORKSPACE_ID,
+                api_user=settings.TAPD_API_USER,
+                api_password=settings.TAPD_API_PASSWORD,
                 verify_ssl=True
             )
         return None
-    except Exception:
+    except Exception as e:
+        logger.exception(f"获取 TapdLoader 失败: {e}")
         return None

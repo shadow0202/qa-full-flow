@@ -1,6 +1,7 @@
 """测试用例API路由（旧接口）"""
 import logging
-from typing import Annotated
+import jieba.analyse
+from typing import Annotated, Dict, List
 from fastapi import APIRouter, HTTPException, Depends
 
 from src.qa_full_flow.core.config import settings
@@ -11,63 +12,181 @@ from src.qa_full_flow.api.schemas import (
 )
 from src.qa_full_flow.api.dependencies import (
     get_test_agent,
-    get_confluence_loader,
+    get_tapd_loader,
+    get_retriever,
 )
+from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1")
+
+# 检索配置
+RETRIEVAL_CHUNK_SIZE = 800
+RETRIEVAL_TOP_K_PER_CHUNK = 3
+RETRIEVAL_MAX_REFS = 20
+
+
+def _retrieve_context_by_chunks(
+    prd_content: str, 
+    retriever, 
+    top_k_per_chunk: int = RETRIEVAL_TOP_K_PER_CHUNK, 
+    chunk_size: int = RETRIEVAL_CHUNK_SIZE
+) -> Dict[str, List[Dict]]:
+    """
+    分块全量检索：将 PRD 切块，逐块检索知识库（Wiki + Bug + Testcase），去重分类
+    """
+    if not retriever:
+        logger.warning("检索器未初始化，跳过上下文检索")
+        return {"wikis": [], "bugs": [], "testcases": []}
+
+    chunker = RecursiveCharacterSplitter(chunk_size=chunk_size, chunk_overlap=100)
+    chunks = chunker.split_text(prd_content)
+    
+    logger.info(f"PRD 已切分为 {len(chunks)} 个块，开始逐块全量检索关联知识...")
+    
+    # 分类存储检索结果
+    context_data = {
+        "wikis": [],      # 相关文档/技术方案
+        "bugs": [],       # 历史缺陷/避坑指南
+        "testcases": []   # 历史用例/已有验证点
+    }
+    seen_ids = set()
+
+    for i, chunk in enumerate(chunks):
+        try:
+            # 提取关键词用于 BM25 和元数据检索
+            # 去除停用词，保留核心名词/动词，提高匹配精准度
+            keywords_list = jieba.analyse.extract_tags(chunk, topK=10, withWeight=False)
+            keywords_query = " ".join(keywords_list)
+            
+            # 如果没有提取到关键词（如文本太短），则回退到原文本
+            if not keywords_query.strip():
+                keywords_query = chunk
+            
+            logger.debug(f"块 {i+1} 提取关键词: {keywords_query[:50]}...")
+
+            # 🟢 全量检索（不限制 source_type，让混合检索路召回所有类型）
+            results = retriever.search(
+                query=chunk,                  # 向量路使用完整文本
+                n_results=top_k_per_chunk,
+                use_hybrid=True,              # 开启混合检索
+                use_reranker=True,            # 开启重排序
+                
+                # 🔧 优化入参
+                bm25_query=keywords_query,    # BM25路使用关键词
+                metadata_query=keywords_query # 元数据路使用关键词
+            )
+            
+            new_items = 0
+            for res in results:
+                doc_id = res.get("doc_id") or res.get("metadata", {}).get("doc_id")
+                source_type = res.get("metadata", {}).get("source_type", "unknown")
+                
+                if doc_id and doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    new_items += 1
+                    
+                    # 分类归档
+                    if source_type == "wiki":
+                        context_data["wikis"].append(res)
+                    elif source_type == "bug":
+                        context_data["bugs"].append(res)
+                    elif source_type == "testcase":
+                        context_data["testcases"].append(res)
+            
+            logger.debug(f"块 {i+1} 检索完成，新增 {new_items} 条关联知识")
+        except Exception as e:
+            logger.warning(f"块 {i+1} 检索失败: {e}")
+            continue
+
+    total_count = sum(len(v) for v in context_data.values())
+    logger.info(f"分块检索完成，共获取: {len(context_data['wikis'])} 篇文档, "
+                f"{len(context_data['bugs'])} 个缺陷, {len(context_data['testcases'])} 条用例 "
+                f"(总计 {total_count} 条关联知识)")
+    
+    return context_data
 
 
 @router.post("/testcase/generate", response_model=TestCaseGenerateResponse)
 async def generate_testcase(
     request: TestCaseGenerateRequest,
     test_agent = Depends(get_test_agent),
-    confl_loader = Depends(get_confluence_loader)
+    tapd_loader = Depends(get_tapd_loader),
+    retriever = Depends(get_retriever)
 ):
-    """AI生成测试用例（支持PRD、技术文档、补充文档链接）"""
+    """AI生成测试用例（分块向量检索增强）"""
     try:
-        # 1. 从Confluence链接获取文档内容
+        # 1. 从TAPD Wiki获取PRD文档内容
         prd_docs = []
         tech_docs = []
         other_docs = []
 
-        if confl_loader:
-            logger.info("✅ Confluence连接器已初始化")
+        if tapd_loader:
+            logger.info("✅ TAPD加载器已初始化")
         else:
-            logger.warning("⚠️  Confluence未配置，跳过文档获取")
+            logger.warning("⚠️  TAPD未配置，跳过文档获取")
 
-        # 获取PRD文档（必填）
-        if confl_loader and request.prd_url:
-            logger.info(f"📥 正在获取PRD文档...")
-            prd_doc = confl_loader.load_from_url(request.prd_url)
-            if prd_doc:
-                prd_docs.append(prd_doc)
+        # 获取主Wiki文档（必填）
+        if tapd_loader and request.wiki_id:
+            logger.info(f"📥 正在获取TAPD Wiki {request.wiki_id}...")
+            wiki_doc = tapd_loader.get_wiki_by_id(request.wiki_id)
+            
+            if wiki_doc:
+                prd_docs.append(wiki_doc)
             else:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"无法获取PRD文档，请检查URL是否正确: {request.prd_url}"
+                    detail=f"无法获取TAPD Wiki，请检查ID是否正确: {request.wiki_id}"
                 )
 
-        # 获取技术文档（非必填）
-        if confl_loader and request.tech_doc_urls:
-            logger.info(f"📥 正在获取技术文档...")
-            tech_docs = confl_loader.load_from_urls(request.tech_doc_urls)
+        # 获取额外的Wiki文档（非必填）
+        if tapd_loader and request.additional_wiki_ids:
+            logger.info(f"📥 正在获取额外的TAPD Wiki...")
+            for wiki_id in request.additional_wiki_ids:
+                wiki_doc = tapd_loader.get_wiki_by_id(wiki_id)
+                if wiki_doc:
+                    tech_docs.append(wiki_doc)
 
-        # 获取补充文档（非必填）
-        if confl_loader and request.other_doc_urls:
-            logger.info(f"📥 正在获取补充文档...")
-            other_docs = confl_loader.load_from_urls(request.other_doc_urls)
+        # 2. 🆕 分块向量检索参考用例
+        full_prd_content = prd_docs[0].get("content", "") if prd_docs else ""
+        logger.info("🔍 开始分块向量检索参考用例...")
+        
+        # 执行分块检索（全量检索：Wiki + Bug + Testcase）
+        retrieved_context = _retrieve_context_by_chunks(
+            prd_content=full_prd_content,
+            retriever=retriever,
+            top_k_per_chunk=request.reference_count,
+            chunk_size=RETRIEVAL_CHUNK_SIZE
+        )
+        
+        # 格式化检索结果供 Agent 使用（合并所有类型的参考文档）
+        all_refs = (
+            retrieved_context.get("wikis", []) + 
+            retrieved_context.get("bugs", []) + 
+            retrieved_context.get("testcases", [])
+        )
+        
+        formatted_refs = [
+            SearchResult(
+                rank=i+1,
+                content=ref.get("content", ""),
+                metadata=ref.get("metadata", {}),
+                similarity=ref.get("similarity")
+            )
+            for i, ref in enumerate(all_refs[:RETRIEVAL_MAX_REFS])
+        ]
 
-        # 2. 构建需求描述（从PRD文档中提取）
+        # 3. 构建需求摘要（供日志和Prompt概要使用）
         requirement = ""
         if prd_docs:
             prd_title = prd_docs[0].get("metadata", {}).get("page_title", "")
-            prd_content = prd_docs[0].get("content", "")
-            requirement = f"{prd_title}\n\n{prd_content[:500]}..."
+            # 取前 300 字符作为需求摘要
+            requirement = f"{prd_title}\n\n{full_prd_content[:300]}..."
         else:
-            requirement = f"PRD链接: {request.prd_url}"
+            requirement = f"TAPD Wiki ID: {request.wiki_id}"
 
-        # 3. 使用Agent生成测试用例
+        # 4. 调用 Agent 生成测试用例
+        # 注意：当前 test_agent 为占位符，实际生成逻辑接入后将使用 retrieved_refs 增强 Prompt
         result = test_agent.generate_test_cases(
             requirement=requirement,
             module=request.module,
@@ -79,16 +198,6 @@ async def generate_testcase(
             other_docs=other_docs,
             use_knowledge_base=request.use_knowledge_base
         )
-
-        formatted_refs = [
-            SearchResult(
-                rank=r["rank"],
-                content=r["content"],
-                metadata=r["metadata"],
-                similarity=r.get("similarity")
-            )
-            for r in result.get("references", [])
-        ]
 
         return TestCaseGenerateResponse(
             success=True,
@@ -136,9 +245,8 @@ async def create_testcase_session(request: TestCaseSessionCreateRequest):
         from src.qa_full_flow.agent.test_session import session_manager
 
         config = {
-            "prd_url": request.prd_url,
-            "tech_doc_urls": request.tech_doc_urls or [],
-            "other_doc_urls": request.other_doc_urls or [],
+            "wiki_id": request.wiki_id,
+            "additional_wiki_ids": request.additional_wiki_ids or [],
             "module": request.module,
             "use_knowledge_base": request.use_knowledge_base,
             "n_examples": request.n_examples
@@ -270,26 +378,36 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
 
 def _execute_phase1(session) -> Dict:
     """执行阶段1（提取为独立函数，供 confirm 和 phase1 路由复用）"""
-    from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
+    from src.qa_full_flow.data_pipeline.loaders.tapd_loader import TapdLoader
     from src.qa_full_flow.agent.test_phase1_analyzer import Phase1Analyzer
     from src.qa_full_flow.agent.llm_service import LLMService
     from src.qa_full_flow.retrieval.retriever import Retriever
     from src.qa_full_flow.embedding.embedder import Embedder
     from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 
-    # 获取Confluence文档
-    confl_loader = ConfluenceLoader(
-        url=settings.confluence_url,
-        email=settings.confluence_email,
-        api_token=settings.confluence_api_token
+    # 获取TAPD Wiki文档
+    tapd_loader = TapdLoader(
+        workspace_id=settings.TAPD_WORKSPACE_ID,
+        api_user=settings.TAPD_API_USER,
+        api_password=settings.TAPD_API_PASSWORD
     )
 
-    prd_doc = confl_loader.load_from_url(session.config["prd_url"])
+    wiki_id = session.config["wiki_id"]
+    prd_doc = tapd_loader.get_wiki_by_id(wiki_id)
+    
     if not prd_doc:
-        raise HTTPException(status_code=400, detail="无法获取PRD文档")
+        raise HTTPException(status_code=400, detail="无法获取TAPD Wiki文档")
 
-    tech_docs = confl_loader.load_from_urls(session.config.get("tech_doc_urls", []))
-    other_docs = confl_loader.load_from_urls(session.config.get("other_doc_urls", []))
+    # 获取额外的Wiki文档
+    tech_docs = []
+    other_docs = []
+    additional_wiki_ids = session.config.get("additional_wiki_ids", [])
+    
+    if additional_wiki_ids:
+        for additional_id in additional_wiki_ids:
+            wiki_doc = tapd_loader.get_wiki_by_id(additional_id)
+            if wiki_doc:
+                tech_docs.append(wiki_doc)
 
     # 保存文档到会话
     session.add_artifact("prd_doc", prd_doc)
@@ -309,9 +427,6 @@ def _execute_phase1(session) -> Dict:
         tech_doc_contents=[d.get("content", "") for d in tech_docs],
         other_doc_contents=[d.get("content", "") for d in other_docs],
         use_knowledge_base=session.config.get("use_knowledge_base", True),
-        prd_url=session.config["prd_url"],
-        tech_doc_urls=session.config.get("tech_doc_urls", []),
-        other_doc_urls=session.config.get("other_doc_urls", []),
         feedback_history=session.feedback_history  # 传入反馈历史
     )
 

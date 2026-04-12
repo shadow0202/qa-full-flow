@@ -1,4 +1,4 @@
-"""定时同步任务 - 定期从JIRA/Confluence更新知识库"""
+"""定时同步任务 - 定期从TAPD更新知识库"""
 import time
 import logging
 from datetime import datetime, timedelta
@@ -13,9 +13,9 @@ from src.qa_full_flow.core.logging import setup_logging
 from src.qa_full_flow.embedding.embedder import Embedder
 from src.qa_full_flow.vector_store.chroma_store import ChromaStore
 from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
+from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
 from src.qa_full_flow.retrieval.retriever import Retriever
-from src.qa_full_flow.data_pipeline.loaders.jira_loader import JiraLoader
-from src.qa_full_flow.data_pipeline.loaders.confluence_loader import ConfluenceLoader
+from src.qa_full_flow.data_pipeline.loaders.tapd_loader import TapdLoader
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,18 @@ class SyncScheduler:
         logger.info("初始化向量库...")
         self.embedder = Embedder()
         self.vector_store = ChromaStore()
-        self.pipeline = DataPipeline(self.embedder, self.vector_store)
+        
+        # 初始化文档切分器
+        self.chunker = RecursiveCharacterSplitter(
+            chunk_size=800,      # Wiki 文档切分大小
+            chunk_overlap=100    # 重叠防止信息丢失
+        )
+        
+        self.pipeline = DataPipeline(
+            self.embedder, 
+            self.vector_store,
+            chunker=self.chunker
+        )
         
         # 初始化检索器（用于 BM25 索引重建）
         self.retriever = Retriever(self.embedder, self.vector_store)
@@ -54,43 +65,29 @@ class SyncScheduler:
         # 初始化加载器
         self.jira = None
         self.confluence = None
+        self.tapd = None
         self._init_loaders()
 
         logger.info(f"同步调度器已初始化，间隔: {sync_interval_hours}小时")
     
     def _init_loaders(self):
         """初始化数据加载器"""
-        # 初始化JIRA
-        if settings.JIRA_API_TOKEN:
+        # 初始化Tapd
+        if settings.TAPD_API_USER and settings.TAPD_API_PASSWORD and settings.TAPD_WORKSPACE_ID:
             try:
-                self.jira = JiraLoader(
-                    url=settings.JIRA_URL,
-                    email=settings.JIRA_EMAIL,
-                    api_token=settings.JIRA_API_TOKEN,
-                    project_key=settings.JIRA_PROJECT_KEY
+                self.tapd = TapdLoader(
+                    workspace_id=settings.TAPD_WORKSPACE_ID,
+                    api_user=settings.TAPD_API_USER,
+                    api_password=settings.TAPD_API_PASSWORD
                 )
-                logger.info("JIRA加载器已初始化")
+                logger.info("Tapd加载器已初始化")
             except Exception as e:
-                logger.warning(f"JIRA加载器初始化失败: {e}")
+                logger.warning(f"Tapd加载器初始化失败: {e}")
         else:
-            logger.info("未配置JIRA API Token，跳过JIRA同步")
-
-        # 初始化Confluence
-        if settings.CONFLUENCE_API_TOKEN:
-            try:
-                self.confluence = ConfluenceLoader(
-                    url=settings.CONFLUENCE_URL,
-                    email=settings.CONFLUENCE_EMAIL,
-                    api_token=settings.CONFLUENCE_API_TOKEN
-                )
-                logger.info("Confluence加载器已初始化")
-            except Exception as e:
-                logger.warning(f"Confluence加载器初始化失败: {e}")
-        else:
-            logger.info("未配置Confluence API Token，跳过Confluence同步")
+            logger.info("未配置Tapd API认证信息，跳过Tapd同步")
     
     def run_sync(self):
-        """执行一次同步任务（只同步 bug 和 doc）"""
+        """执行一次同步任务（从TAPD同步Bug、Wiki、Testcase）"""
         logger.info("开始定时同步任务（增量模式）...")
 
         sync_start = datetime.now()
@@ -98,47 +95,65 @@ class SyncScheduler:
         total_updated = 0
         errors = []
 
-        # 1. 同步JIRA数据（Bug）
-        if self.jira:
+        # 1. 同步Tapd数据（Bug）
+        if self.tapd:
             try:
-                logger.info("同步JIRA Bug数据...")
-                stats = self.pipeline.ingest(
-                    self.jira,
-                    "",
+                logger.info("同步Tapd Bug数据...")
+                tapd_stats = self.pipeline.ingest(
+                    self.tapd,
+                    self.tapd.workspace_id,
                     update_mode="incremental",
-                    issue_type="Bug"
+                    resource_type="bugs",
+                    max_results=10000  # 全量同步
                 )
-                total_new += stats.get("ingested", 0)
-                total_updated += stats.get("updated", 0)
-                logger.info(f"JIRA同步完成: {stats}")
+                total_new += tapd_stats.get("ingested", 0)
+                total_updated += tapd_stats.get("updated", 0)
+                logger.info(f"Tapd Bug同步完成: {tapd_stats}")
             except Exception as e:
-                error_msg = f"JIRA同步失败: {e}"
+                error_msg = f"Tapd Bug同步失败: {e}"
                 logger.error(error_msg)
                 errors.append(error_msg)
-        else:
-            logger.info("JIRA未配置，跳过同步")
 
-        # 2. 同步Confluence数据（Doc）
-        if self.confluence:
+            # 2. 同步Tapd数据（Testcase）
             try:
-                logger.info("同步Confluence文档数据...")
-                stats = self.pipeline.ingest(
-                    self.confluence,
-                    "",
-                    update_mode="incremental"
+                logger.info("同步Tapd Testcase数据...")
+                tapd_stats = self.pipeline.ingest(
+                    self.tapd,
+                    self.tapd.workspace_id,
+                    update_mode="incremental",
+                    resource_type="testcases",
+                    max_results=10000  # 全量同步
                 )
-                total_new += stats.get("ingested", 0)
-                total_updated += stats.get("updated", 0)
-                logger.info(f"Confluence同步完成: {stats}")
+                total_new += tapd_stats.get("ingested", 0)
+                total_updated += tapd_stats.get("updated", 0)
+                logger.info(f"Tapd Testcase同步完成: {tapd_stats}")
             except Exception as e:
-                error_msg = f"Confluence同步失败: {e}"
+                error_msg = f"Tapd Testcase同步失败: {e}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+
+            # 3. 同步Tapd数据（Wiki/知识库文档）
+            try:
+                logger.info("同步Tapd Wiki数据（知识库/PRD/技术文档）...")
+                tapd_stats = self.pipeline.ingest(
+                    self.tapd,
+                    self.tapd.workspace_id,
+                    update_mode="incremental",
+                    resource_type="wikis",
+                    max_results=10000  # 全量同步
+                )
+                total_new += tapd_stats.get("ingested", 0)
+                total_updated += tapd_stats.get("updated", 0)
+                logger.info(f"Tapd Wiki同步完成: {tapd_stats}")
+            except Exception as e:
+                error_msg = f"Tapd Wiki同步失败: {e}"
                 logger.error(error_msg)
                 errors.append(error_msg)
         else:
-            logger.info("Confluence未配置，跳过同步")
+            logger.info("Tapd未配置，跳过同步")
 
-        # 3. 重建 BM25 索引（使用统一方法）
-        if total_new > 0:
+        # 5. 重建 BM25 索引（使用统一方法）
+        if total_new > 0 or total_updated > 0:
             try:
                 logger.info("重建 BM25 索引...")
                 doc_count = self.pipeline.rebuild_bm25_index(self.retriever)
@@ -214,7 +229,7 @@ def main():
     """主函数"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="定时同步JIRA/Confluence数据到知识库")
+    parser = argparse.ArgumentParser(description="定时同步TAPD数据到知识库")
     parser.add_argument(
         "--interval", 
         type=int, 

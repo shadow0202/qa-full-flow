@@ -42,6 +42,7 @@ class Retriever:
         # 1. 尝试从文件加载
         if self.hybrid_retriever.load_bm25_index():
             logger.info("✅ BM25 索引已从文件加载")
+            self._sync_bm25_with_vector_store()
             return
 
         # 2. 加载失败，尝试从向量库重建
@@ -52,11 +53,29 @@ class Retriever:
                 self.build_bm25_index(all_docs)
                 # 保存索引
                 self.hybrid_retriever.save_bm25_index()
-                logger.info("✅ BM25 索引已从向量库重建并保存")
+                logger.info(f"✅ BM25 索引已从向量库重建并保存（{len(all_docs)} 个文档）")
             else:
                 logger.info("ℹ️  向量库中无文档，BM25 索引将在首次入库时构建")
         except Exception as e:
             logger.warning(f"⚠️  BM25 索引重建失败: {e}", exc_info=True)
+    
+    def _sync_bm25_with_vector_store(self):
+        """
+        同步 BM25 索引与向量库：检查文档数量是否一致，不一致则重建
+        """
+        try:
+            current_count = self.vector_store.count()
+            bm25_count = len(self.hybrid_retriever.bm25_doc_ids)
+            
+            if current_count != bm25_count:
+                logger.info(f"🔄 BM25 索引文档数 ({bm25_count}) 与向量库 ({current_count}) 不一致，正在重建...")
+                all_docs = self._get_all_docs_from_vector_store()
+                if all_docs:
+                    self.build_bm25_index(all_docs)
+                    self.hybrid_retriever.save_bm25_index()
+                    logger.info(f"✅ BM25 索引已重建（{len(all_docs)} 个文档）")
+        except Exception as e:
+            logger.warning(f"⚠️  BM25 索引同步失败: {e}", exc_info=True)
 
     def _get_all_docs_from_vector_store(self) -> list:
         """

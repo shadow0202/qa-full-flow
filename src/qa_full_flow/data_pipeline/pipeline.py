@@ -24,7 +24,7 @@ class DataPipeline:
         self.chunker = chunker  # 可选，None 表示不切分
 
     def ingest(self, loader: BaseLoader, source: str, skip_existing: bool = True,
-               update_mode: str = "incremental", chunker: Optional[RecursiveCharacterSplitter] = None) -> Dict:
+               update_mode: str = "incremental", chunker: Optional[RecursiveCharacterSplitter] = None, **loader_kwargs) -> Dict:
         """
         执行数据入库
 
@@ -37,6 +37,7 @@ class DataPipeline:
                 - "incremental": 增量更新，对比 last_updated 时间戳
                 - "force": 强制更新，覆盖所有数据
             chunker: 文档切分器（可选，传入则使用此实例而非全局默认）
+            **loader_kwargs: 传递给 loader.load() 的额外参数 (如 resource_type 等)
 
         Returns:
             入库统计信息
@@ -47,7 +48,7 @@ class DataPipeline:
         active_chunker = chunker or self.chunker
 
         # 1. 加载数据
-        documents = loader.load(source)
+        documents = loader.load(source, **loader_kwargs)
 
         if not documents:
             logger.warning("没有可入库的数据")
@@ -78,11 +79,32 @@ class DataPipeline:
                 "updated": 0
             }
 
-        # 3. 文档切分（如果启用了 chunker）
+        # 3. 文档切分（根据文档类型智能切分）
+        # Wiki 文档通常较长，需要切分；Bug/Testcase 较短，保持完整
         if active_chunker:
-            logger.info("正在切分文档...")
-            new_docs = active_chunker.split_documents(new_docs)
-            logger.info(f"切分结果: {len(documents)} 条文档 → {len(new_docs)} 个块")
+            logger.info("正在智能切分文档...")
+            chunked_docs = []
+            unchunked_docs = []
+            
+            for doc in new_docs:
+                source_type = doc.get("source_type", "")
+                content_len = len(doc.get("content", ""))
+                
+                # Wiki 文档且内容超过 chunk_size 时进行切分
+                if source_type == "wiki" and content_len > active_chunker.chunk_size:
+                    chunked_docs.append(doc)
+                else:
+                    # Bug/Testcase 或短文档保持完整
+                    unchunked_docs.append(doc)
+            
+            # 只切分需要切分的文档
+            if chunked_docs:
+                original_count = len(chunked_docs)
+                chunked_docs = active_chunker.split_documents(chunked_docs)
+                logger.info(f"切分结果: {original_count} 条 Wiki 文档被切分为 {len(chunked_docs)} 个块")
+            
+            new_docs = chunked_docs + unchunked_docs
+            logger.info(f"文档处理完成: {len(chunked_docs)} 个切分块 + {len(unchunked_docs)} 条完整文档 = {len(new_docs)} 条")
 
         # 4. 向量化
         logger.info(f"正在向量化 {len(new_docs)} 条文档...")
@@ -92,15 +114,16 @@ class DataPipeline:
         # 5. 构建元数据
         metadatas = []
         for doc in new_docs:
+            doc_meta = doc.get("metadata", {})
             metadata = {
-                "source_type": doc["source_type"],
-                "module": doc["module"],
-                "tags": ",".join(doc["tags"]) if isinstance(doc["tags"], list) else doc["tags"],
-                "priority": doc["metadata"].get("priority", "unknown"),
-                "version": doc["metadata"].get("version", ""),
-                "author": doc["metadata"].get("author", ""),
-                "create_date": doc["metadata"].get("create_date", ""),
-                "last_updated": doc["metadata"].get("last_updated", ""),
+                "source_type": doc.get("source_type", "unknown"),
+                "module": doc.get("module", ""),
+                "tags": ",".join(doc.get("tags", [])) if isinstance(doc.get("tags"), list) else doc.get("tags", ""),
+                "priority": doc_meta.get("priority", "unknown"),
+                "version": doc_meta.get("version", ""),
+                "author": doc_meta.get("author", ""),
+                "create_date": doc_meta.get("create_date", ""),
+                "last_updated": doc_meta.get("last_updated", ""),
                 "synced_at": datetime.now().isoformat(),
             }
             if "chunk_id" in doc:
@@ -125,7 +148,7 @@ class DataPipeline:
             "loaded": len(documents),
             "ingested": len(new_docs),
             "skipped": skipped_count,
-            "updated": len(new_docs)  # 简化统计，实际应该区分新增和更新
+            "updated": updated_count if 'updated_count' in locals() else len(new_docs)
         }
 
     def rebuild_bm25_index(self, retriever) -> int:

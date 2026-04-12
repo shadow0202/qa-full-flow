@@ -35,7 +35,12 @@
       "Bash(git checkout *)",
       "Bash(powershell *)",
       "Bash(wc *)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(type *)",
+      "Bash(select-object *)",
+      "WebFetch(open.tapd.cn)",
+      "Bash(.venv\\scripts\\python.exe *)",
+      "Bash(select-string *)"
     ]
   },
   "$version": 3

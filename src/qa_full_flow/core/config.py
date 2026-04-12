@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     CONFLUENCE_EMAIL: str = Field(default="", description="Confluence邮箱")
     CONFLUENCE_API_TOKEN: str = Field(default="", description="Confluence API Token")
 
+    # ============ Tapd配置 ============
+    TAPD_WORKSPACE_ID: str = Field(default="", description="Tapd Workspace ID")
+    TAPD_API_USER: str = Field(default="", description="Tapd API 用户名")
+    TAPD_API_PASSWORD: str = Field(default="", description="Tapd API 口令")
+
     # ============ JIRA配置 ============
     JIRA_URL: str = Field(default="", description="JIRA服务器URL")
     JIRA_EMAIL: str = Field(default="", description="JIRA邮箱")

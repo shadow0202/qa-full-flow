@@ -9,7 +9,7 @@ class RecursiveCharacterSplitter:
 
     切分策略（按优先级）：
     1. 按 Markdown 一级标题 (# ) 切分
-    2. 按 Markdown 二级标题 (## ) 切分`
+    2. 按 Markdown 二级标题 (## ) 切分
     3. 按 Markdown 三级标题 (### ) 切分
     4. 按段落 (\n\n) 切分
     5. 按句子 (. 。! ！? ？) 切分
@@ -171,8 +171,8 @@ class RecursiveCharacterSplitter:
         """
         应用重叠策略，防止关键信息被切断
 
-        例如：chunk_size=500, chunk_overlap=50
-        每个块的前 50 个字符与前一个块的后 50 个字符重叠
+        注意：添加重叠后，块的实际大小可能略超过 chunk_size。
+        这是设计取舍：保证上下文连续性比严格限制大小更重要。
         """
         if not chunks or self.chunk_overlap == 0:
             return chunks

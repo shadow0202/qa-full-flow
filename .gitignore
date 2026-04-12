@@ -112,7 +112,8 @@ docker-compose.override.yml
 # ============================================
 # AI 工具生成（根据实际需要）
 # ============================================
-# .qwen/
-# .claude/
-# .cursor/
+.qwen/settings.json
+
+# 测试数据（运行时生成）
+tests/test_pipeline/data/
 

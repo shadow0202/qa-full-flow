@@ -43,19 +43,13 @@ class SearchResponse(BaseModel):
 
 class TestCaseGenerateRequest(BaseModel):
     """测试用例生成请求"""
-    # 必填：PRD文档链接
-    prd_url: str = Field(..., description="PRD文档的Confluence链接（必填）")
+    # 必填：TAPD Wiki ID（PRD/技术文档）
+    wiki_id: str = Field(..., description="TAPD Wiki ID（PRD/技术文档ID，必填）")
 
-    # 非必填：技术文档链接列表
-    tech_doc_urls: Optional[List[str]] = Field(
+    # 非必填：额外的 Wiki ID 列表
+    additional_wiki_ids: Optional[List[str]] = Field(
         default_factory=list,
-        description="技术文档的Confluence链接列表（非必填）"
-    )
-
-    # 非必填：其他补充文档链接列表
-    other_doc_urls: Optional[List[str]] = Field(
-        default_factory=list,
-        description="其他补充文档的Confluence链接列表（非必填）"
+        description="额外的TAPD Wiki ID列表（非必填）"
     )
 
     # 知识库控制
@@ -108,14 +102,10 @@ class CollectionInfoResponse(BaseModel):
 
 class TestCaseSessionCreateRequest(BaseModel):
     """创建测试用例会话请求"""
-    prd_url: str = Field(..., description="PRD文档的Confluence链接（必填）")
-    tech_doc_urls: Optional[List[str]] = Field(
+    wiki_id: str = Field(..., description="TAPD Wiki ID（PRD/技术文档ID，必填）")
+    additional_wiki_ids: Optional[List[str]] = Field(
         default_factory=list,
-        description="技术文档的Confluence链接列表（非必填）"
-    )
-    other_doc_urls: Optional[List[str]] = Field(
-        default_factory=list,
-        description="其他补充文档的Confluence链接列表（非必填）"
+        description="额外的TAPD Wiki ID列表（非必填）"
     )
     module: str = Field(..., description="所属模块")
     use_knowledge_base: bool = Field(True, description="是否使用知识库")
