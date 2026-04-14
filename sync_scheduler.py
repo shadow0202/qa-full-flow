@@ -10,11 +10,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.qa_full_flow.core.config import settings
 from src.qa_full_flow.core.logging import setup_logging
-from src.qa_full_flow.embedding.embedder import Embedder
-from src.qa_full_flow.vector_store.chroma_store import ChromaStore
-from src.qa_full_flow.data_pipeline.pipeline import DataPipeline
-from src.qa_full_flow.data_pipeline.chunker import RecursiveCharacterSplitter
-from src.qa_full_flow.retrieval.retriever import Retriever
 from src.qa_full_flow.data_pipeline.loaders.tapd_loader import TapdLoader
 
 logger = logging.getLogger(__name__)
@@ -42,25 +37,19 @@ class SyncScheduler:
             use_json=settings.LOG_USE_JSON,
         )
 
-        # 初始化服务
-        logger.info("初始化向量库...")
-        self.embedder = Embedder()
-        self.vector_store = ChromaStore()
-        
-        # 初始化文档切分器
-        self.chunker = RecursiveCharacterSplitter(
-            chunk_size=800,      # Wiki 文档切分大小
-            chunk_overlap=100    # 重叠防止信息丢失
+        # 复用API的依赖注入（共享实例，避免重复加载模型）
+        from src.qa_full_flow.api.dependencies import (
+            get_embedder,
+            get_vector_store,
+            get_pipeline,
+            get_retriever,
         )
-        
-        self.pipeline = DataPipeline(
-            self.embedder, 
-            self.vector_store,
-            chunker=self.chunker
-        )
-        
-        # 初始化检索器（用于 BM25 索引重建）
-        self.retriever = Retriever(self.embedder, self.vector_store)
+
+        logger.info("初始化服务实例（共享模式）...")
+        self.embedder = get_embedder()
+        self.vector_store = get_vector_store()
+        self.pipeline = get_pipeline()
+        self.retriever = get_retriever()
 
         # 初始化加载器
         self.jira = None

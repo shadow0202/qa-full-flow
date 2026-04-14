@@ -48,20 +48,21 @@ class ConfluenceLoader(BaseLoader):
         """析构函数，确保连接被关闭"""
         self.close()
     
-    def load(self, source: str = "",
-             space_key: str = "",
-             max_results: int = 50) -> List[Dict]:
+    def load(self, source: str = "", **kwargs) -> List[Dict]:
         """
         从Confluence加载文档
 
         Args:
             source: 未使用（保持接口一致性）
-            space_key: 空间Key（如"TEST"、"DEV"等）
-            max_results: 最大结果数
+            **kwargs: 加载器特定参数
+                - space_key: 空间Key（如"TEST"、"DEV"等）
+                - max_results: 最大结果数，默认50
 
         Returns:
             文档列表
         """
+        space_key = kwargs.get("space_key", "")
+        max_results = kwargs.get("max_results", 50)
         logger.info(f"正在从Confluence拉取文档... (space={space_key or 'all'}, max={max_results})")
 
         # 获取页面列表

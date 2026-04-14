@@ -85,22 +85,23 @@ class TapdLoader(BaseLoader):
         # 7. 去除首尾空白
         return text.strip()
 
-    def load(self, source: str = "",
-             resource_type: str = "bugs",
-             max_results: int = 100,
-             last_updated: Optional[str] = None) -> List[Dict]:
+    def load(self, source: str = "", **kwargs) -> List[Dict]:
         """
         从Tapd加载数据
 
         Args:
             source: 未使用（保持接口一致性），或者用作 workspace_id 备用
-            resource_type: 资源类型 (bugs, stories, testcases, wikis)
-            max_results: 最大结果数
-            last_updated: 增量更新时间 (ISO 8601 格式)
+            **kwargs: 加载器特定参数
+                - resource_type: 资源类型 (bugs, stories, testcases, wikis)，默认"bugs"
+                - max_results: 最大结果数，默认100
+                - last_updated: 增量更新时间 (ISO 8601 格式)
 
         Returns:
             文档列表
         """
+        resource_type = kwargs.get("resource_type", "bugs")
+        max_results = kwargs.get("max_results", 100)
+        last_updated = kwargs.get("last_updated", None)
         workspace = source or self.workspace_id
         logger.info(f"正在从Tapd拉取 {resource_type} 数据... (Workspace: {workspace})")
 

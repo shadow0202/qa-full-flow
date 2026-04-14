@@ -3,10 +3,13 @@
 提供FastAPI依赖注入函数，替代全局变量。
 使用 lru_cache 实现实例缓存，避免重复创建。
 """
+import logging
 from functools import lru_cache
 from typing import Optional
 
 from src.qa_full_flow.core.config import settings as app_settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_settings():
@@ -41,13 +44,27 @@ def get_vector_store():
 
 
 @lru_cache(maxsize=2)
+def get_reranker():
+    """获取重排序器（实例缓存，加载失败返回None）"""
+    try:
+        from src.qa_full_flow.retrieval.reranker import Reranker
+        reranker = Reranker()
+        logger.info("✅ Reranker已初始化")
+        return reranker
+    except Exception as e:
+        logger.warning(f"⚠️  Reranker模型加载失败: {e}，将跳过重排序")
+        return None
+
+
+@lru_cache(maxsize=2)
 def get_retriever():
     """获取检索器（实例缓存）"""
     from src.qa_full_flow.retrieval.retriever import Retriever
 
     embedder = get_embedder()
     vector_store = get_vector_store()
-    return Retriever(embedder, vector_store)
+    reranker = get_reranker()  # 注入Reranker实例
+    return Retriever(embedder, vector_store, reranker=reranker)
 
 
 @lru_cache(maxsize=2)

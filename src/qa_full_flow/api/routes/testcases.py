@@ -8,7 +8,11 @@ from src.qa_full_flow.core.config import settings
 from src.qa_full_flow.api.schemas import (
     TestCaseGenerateRequest, TestCaseGenerateResponse,
     TestCaseSaveRequest, TestCaseSaveResponse,
-    SearchResult
+    SearchResult,
+    TestCaseSessionCreateRequest, TestCaseSessionCreateResponse,
+    TestCasePhase1Response, TestCasePhase2Response, TestCasePhase3Response,
+    TestCasePhase4Response, TestCaseConfirmRequest, TestCaseConfirmResponse,
+    TestCaseSessionInfoResponse
 )
 from src.qa_full_flow.api.dependencies import (
     get_test_agent,
@@ -316,6 +320,7 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
             # 用户未确认，记录反馈
             if request.feedback:
                 session.add_feedback(session.status.value, request.feedback)
+                session_manager.update_session(session)  # 持久化反馈
 
             # 自动重新执行当前阶段
             current_status = session.status.value
@@ -363,6 +368,7 @@ async def confirm_phase(session_id: str, request: TestCaseConfirmRequest):
         current_status = session.status.value
         if current_status in status_map:
             session.update_status(SessionStatus(status_map[current_status]))
+            session_manager.update_session(session)  # 持久化
 
         return TestCaseConfirmResponse(
             success=True,
@@ -434,6 +440,7 @@ def _execute_phase1(session) -> Dict:
     session.add_artifact("analysis_doc", result["analysis_doc"])
     session.add_artifact("analysis_result", result["analysis_result"])
     session.update_status("phase1_done")
+    session_manager.update_session(session)  # 持久化
 
     return result
 
@@ -466,6 +473,7 @@ def _execute_phase2(session) -> Dict:
     session.add_artifact("test_cases", result["test_cases"])
     session.add_artifact("test_cases_json", result["json_output"])
     session.update_status("phase2_done")
+    session_manager.update_session(session)  # 持久化
 
     return result
 
@@ -490,6 +498,7 @@ def _execute_phase3(session) -> Dict:
 
     session.add_artifact("review_report", result["review_report"])
     session.update_status("phase3_done")
+    session_manager.update_session(session)  # 持久化
 
     return result
 
@@ -601,6 +610,7 @@ async def execute_phase4(session_id: str):
         session.add_artifact("deliverables", result["deliverables"])
         session.add_artifact("delivery_list", result["delivery_list"])
         session.update_status("completed")
+        session_manager.update_session(session)  # 持久化
 
         return TestCasePhase4Response(
             success=True,

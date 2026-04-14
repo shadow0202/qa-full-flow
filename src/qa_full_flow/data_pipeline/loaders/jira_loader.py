@@ -51,22 +51,23 @@ class JiraLoader(BaseLoader):
         """析构函数，确保连接被关闭"""
         self.close()
     
-    def load(self, source: str = "",
-             issue_type: str = "Bug",
-             status: str = "",
-             max_results: int = 100) -> List[Dict]:
+    def load(self, source: str = "", **kwargs) -> List[Dict]:
         """
         从JIRA加载缺陷数据
 
         Args:
             source: 未使用（保持接口一致性）
-            issue_type: 问题类型（Bug, Task, Story等）
-            status: 状态过滤（Done, Closed等）
-            max_results: 最大结果数
+            **kwargs: 加载器特定参数
+                - issue_type: 问题类型（Bug, Task, Story等），默认"Bug"
+                - status: 状态过滤（Done, Closed等）
+                - max_results: 最大结果数，默认100
 
         Returns:
             文档列表
         """
+        issue_type = kwargs.get("issue_type", "Bug")
+        status = kwargs.get("status", "")
+        max_results = kwargs.get("max_results", 100)
         logger.info(f"正在从JIRA拉取 {issue_type} 数据...")
 
         # 构建JQL查询

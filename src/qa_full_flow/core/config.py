@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     LOG_FILE: Optional[str] = Field(default=None, description="日志文件路径")
     LOG_USE_JSON: bool = Field(default=False, description="是否使用JSON格式日志")
 
+    # ============ 会话持久化配置 ============
+    SESSION_BACKEND: str = Field(default="sqlite", description="会话后端: memory/sqlite")
+    SESSION_DB_PATH: str = Field(default="./data/sessions.db", description="SQLite数据库路径")
+    SESSION_MAX_AGE_HOURS: int = Field(default=24, description="会话最大存活时间（小时）")
+
     # ============ 验证器 ============
     @field_validator("API_PORT")
     @classmethod
@@ -99,6 +104,14 @@ class Settings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f"日志级别必须是 {valid_levels} 之一，当前: {v}")
         return v.upper()
+
+    @field_validator("SESSION_BACKEND")
+    @classmethod
+    def validate_session_backend(cls, v: str) -> str:
+        """验证会话后端配置"""
+        if v not in ("memory", "sqlite"):
+            raise ValueError(f"会话后端必须是 'memory' 或 'sqlite'，当前: {v}")
+        return v
 
     @field_validator("LLM_API_KEY")
     @classmethod

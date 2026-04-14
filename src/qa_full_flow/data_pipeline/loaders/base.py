@@ -5,15 +5,16 @@ from typing import List, Dict
 
 class BaseLoader(ABC):
     """数据加载器抽象基类"""
-    
+
     @abstractmethod
-    def load(self, source: str) -> List[Dict]:
+    def load(self, source: str = "", **kwargs) -> List[Dict]:
         """
         加载数据
-        
+
         Args:
             source: 数据源路径或标识
-            
+            **kwargs: 加载器特定参数（由各子类定义）
+
         Returns:
             文档列表，每个文档包含:
             - doc_id: 唯一标识

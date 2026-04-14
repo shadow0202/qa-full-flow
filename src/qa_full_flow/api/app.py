@@ -6,6 +6,7 @@
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from src.qa_full_flow.core.config import settings
 from src.qa_full_flow.core.logging import setup_logging
@@ -68,6 +69,15 @@ def create_app() -> FastAPI:
         description="基于向量知识库的智能测试用例生成与检索系统",
         version=settings.APP_VERSION,
         lifespan=lifespan,
+    )
+
+    # 注册CORS中间件 - 允许前端访问
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # 前端地址
+        allow_credentials=True,
+        allow_methods=["*"],  # 允许所有HTTP方法
+        allow_headers=["*"],  # 允许所有请求头
     )
 
     # 注册中间件

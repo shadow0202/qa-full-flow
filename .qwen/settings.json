@@ -40,7 +40,11 @@
       "Bash(select-object *)",
       "WebFetch(open.tapd.cn)",
       "Bash(.venv\\scripts\\python.exe *)",
-      "Bash(select-string *)"
+      "Bash(select-string *)",
+      "Read(E:\\workspace\\qa-full-flow-frontend\\src\\app/**)",
+      "WebFetch(juejin.cn)",
+      "Read(E:\\workspace\\qa-full-flow-frontend/**)",
+      "Bash(npm create *)"
     ]
   },
   "$version": 3
